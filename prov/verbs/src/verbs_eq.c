@@ -817,7 +817,7 @@ int fi_ibv_eq_open(struct fid_fabric *fabric, struct fi_eq_attr *attr,
 		goto err1;
 	}
 
-	_eq->epfd = epoll_create1(0);
+	_eq->epfd = epoll_create(1);
 	if (_eq->epfd < 0) {
 		ret = -errno;
 		goto err2;

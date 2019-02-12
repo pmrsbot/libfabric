@@ -3,6 +3,8 @@ language: c
 compiler:
     - clang
     - gcc
+    - clang++
+    - g++
 os:
     - linux
     - osx

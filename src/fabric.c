@@ -915,8 +915,7 @@ unlock:
 	pthread_mutex_unlock(&common_locks.ini_lock);
 }
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-void DEFAULT_SYMVER_PRE(fi_freeinfo)(struct fi_info *info)
+void fi_freeinfo(struct fi_info *info)
 {
 	struct fi_info *next;
 
@@ -948,7 +947,6 @@ void DEFAULT_SYMVER_PRE(fi_freeinfo)(struct fi_info *info)
 		free(info);
 	}
 }
-DEFAULT_SYMVER(fi_freeinfo_, fi_freeinfo, FABRIC_1.3);
 
 static bool
 ofi_info_match_prov(struct fi_info *info, struct ofi_info_match *match)
@@ -1181,8 +1179,7 @@ static int ofi_layering_ok(const struct fi_provider *provider,
 	return !strcasecmp(provider->name, prov_name);
 }
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-int DEFAULT_SYMVER_PRE(fi_getinfo)(uint32_t version, const char *node,
+int fi_getinfo(uint32_t version, const char *node,
 		const char *service, uint64_t flags,
 		const struct fi_info *hints, struct fi_info **info)
 {
@@ -1286,7 +1283,6 @@ int DEFAULT_SYMVER_PRE(fi_getinfo)(uint32_t version, const char *node,
 
 	return *info ? 0 : -FI_ENODATA;
 }
-DEFAULT_SYMVER(fi_getinfo_, fi_getinfo, FABRIC_1.3);
 
 struct fi_info *ofi_allocinfo_internal(void)
 {
@@ -1312,8 +1308,7 @@ err:
 }
 
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-struct fi_info *DEFAULT_SYMVER_PRE(fi_dupinfo)(const struct fi_info *info)
+struct fi_info *fi_dupinfo(const struct fi_info *info)
 {
 	struct fi_info *dup;
 	int ret;
@@ -1417,10 +1412,8 @@ fail:
 	fi_freeinfo(dup);
 	return NULL;
 }
-DEFAULT_SYMVER(fi_dupinfo_, fi_dupinfo, FABRIC_1.3);
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-int DEFAULT_SYMVER_PRE(fi_fabric)(struct fi_fabric_attr *attr,
+int fi_fabric(struct fi_fabric_attr *attr,
 		struct fid_fabric **fabric, void *context)
 {
 	struct ofi_prov *prov;
@@ -1457,17 +1450,13 @@ int DEFAULT_SYMVER_PRE(fi_fabric)(struct fi_fabric_attr *attr,
 
 	return ret;
 }
-DEFAULT_SYMVER(fi_fabric_, fi_fabric, FABRIC_1.1);
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-uint32_t DEFAULT_SYMVER_PRE(fi_version)(void)
+uint32_t fi_version(void)
 {
 	return FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION);
 }
-DEFAULT_SYMVER(fi_version_, fi_version, FABRIC_1.0);
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-int DEFAULT_SYMVER_PRE(fi_open)(uint32_t version, const char *name,
+int fi_open(uint32_t version, const char *name,
 		void *attr, size_t attr_len, uint64_t flags,
 		struct fid **fid, void *context)
 {
@@ -1480,7 +1469,6 @@ int DEFAULT_SYMVER_PRE(fi_open)(uint32_t version, const char *name,
 
 	return -FI_ENOSYS;
 }
-DEFAULT_SYMVER(fi_open_, fi_open, FABRIC_1.5);
 
 static const char *const errstr[] = {
 	[FI_EOTHER - FI_ERRNO_OFFSET] = "Unspecified error",
@@ -1499,8 +1487,7 @@ static const char *const errstr[] = {
 	[FI_ENORX - FI_ERRNO_OFFSET] = "Receiver not ready, no receive buffers available",
 };
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-const char *DEFAULT_SYMVER_PRE(fi_strerror)(int errnum)
+const char *fi_strerror(int errnum)
 {
 	if (errnum < 0)
 		errnum = -errnum;
@@ -1512,4 +1499,3 @@ const char *DEFAULT_SYMVER_PRE(fi_strerror)(int errnum)
 	else
 		return errstr[FI_EOTHER - FI_ERRNO_OFFSET];
 }
-DEFAULT_SYMVER(fi_strerror_, fi_strerror, FABRIC_1.0);

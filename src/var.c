@@ -92,8 +92,7 @@ fi_find_param(const struct fi_provider *provider, const char *param_name)
 	return NULL;
 }
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-int DEFAULT_SYMVER_PRE(fi_getparams)(struct fi_param **params, int *count)
+int fi_getparams(struct fi_param **params, int *count)
 {
 	struct fi_param *vhead = NULL;
 	struct fi_param_entry *param;
@@ -137,10 +136,8 @@ out:
 	*params = vhead;
 	return FI_SUCCESS;
 }
-DEFAULT_SYMVER(fi_getparams_, fi_getparams, FABRIC_1.0);
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-void DEFAULT_SYMVER_PRE(fi_freeparams)(struct fi_param *params)
+void fi_freeparams(struct fi_param *params)
 {
 	int i;
 	for (i = 0; params[i].name; ++i) {
@@ -150,7 +147,6 @@ void DEFAULT_SYMVER_PRE(fi_freeparams)(struct fi_param *params)
 	}
 	free(params);
 }
-DEFAULT_SYMVER(fi_freeparams_, fi_freeparams, FABRIC_1.0);
 
 static void fi_free_param(struct fi_param_entry *param)
 {
@@ -184,8 +180,7 @@ void fi_param_undefine(const struct fi_provider *provider)
 	}
 }
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-int DEFAULT_SYMVER_PRE(fi_param_define)(const struct fi_provider *provider,
+int fi_param_define(const struct fi_provider *provider,
 		const char *param_name, enum fi_param_type type,
 		const char *help_string_fmt, ...)
 {
@@ -251,7 +246,6 @@ int DEFAULT_SYMVER_PRE(fi_param_define)(const struct fi_provider *provider,
 	FI_DBG(provider, FI_LOG_CORE, "registered var %s\n", param_name);
 	return FI_SUCCESS;
 }
-DEFAULT_SYMVER(fi_param_define_, fi_param_define, FABRIC_1.0);
 
 static int fi_parse_bool(const char *str_value)
 {
@@ -339,8 +333,7 @@ void ofi_dump_sysconfig(void)
 	}
 }
 
-__attribute__((visibility ("default"),EXTERNALLY_VISIBLE))
-int DEFAULT_SYMVER_PRE(fi_param_get)(struct fi_provider *provider,
+int fi_param_get(struct fi_provider *provider,
 		const char *param_name, void *value)
 {
 	struct fi_param_entry *param;
@@ -409,7 +402,6 @@ int DEFAULT_SYMVER_PRE(fi_param_get)(struct fi_provider *provider,
 out:
 	return ret;
 }
-DEFAULT_SYMVER(fi_param_get_, fi_param_get, FABRIC_1.0);
 
 
 void fi_param_init(void)

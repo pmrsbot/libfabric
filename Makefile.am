@@ -144,12 +144,7 @@ common_hook_srcs =				\
 # ensure dl-built providers link back to libfabric
 linkback = src/libfabric.la
 
-if EMBEDDED
-noinst_PROGRAMS += \
-	util/fi_info \
-	util/fi_strerror \
-	util/fi_pingpong
-else
+if !EMBEDDED
 bin_PROGRAMS += \
 	util/fi_info \
 	util/fi_strerror \

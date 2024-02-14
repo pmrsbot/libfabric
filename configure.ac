@@ -395,6 +395,7 @@ AC_ARG_ENABLE([embedded],
                icc_symver_hack=1],
 	      [enable_embedded=no])
 AM_CONDITIONAL([EMBEDDED], [test x"$enable_embedded" = x"yes"])
+AM_CONDITIONAL([EMBEDDED_STATIC], [test x"$enable_embedded" = x"yes" -a x"$enable_static" != x"no"])
 
 AM_CONDITIONAL(HAVE_LD_VERSION_SCRIPT, test "$ac_cv_version_script" = "yes")
 

@@ -18,7 +18,7 @@ lib_LTLIBRARIES =
 noinst_PROGRAMS =
 bin_PROGRAMS =
 
-if EMBEDDED
+if EMBEDDED_STATIC
 noinst_LTLIBRARIES += src/libfabric.la
 else
 lib_LTLIBRARIES += src/libfabric.la

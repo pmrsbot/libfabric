@@ -21,3 +21,6 @@ cannot be accepted.  An example sign-off tag looks like:
 """
 Signed-off-by: Some Developer <developer@example.org>
 """
+
+foo
+bar

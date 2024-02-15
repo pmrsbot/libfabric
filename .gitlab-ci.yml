@@ -11,7 +11,8 @@ variables:
     ANL_POLARIS_SCHEDULER_PARAMETERS: ""
     ANL_POLARIS_PROJECT_SERVICE_USER: "mpich"
 
-.report_status:
+# report status to github PRs
+.report-status:
   variables:
     STATUS_PROJECT: raffenet/libfabric
     STATUS_NAME: example

@@ -74,4 +74,4 @@ job-build-libs:
     extends: .generic-login-shell
     stage: build
     script:
-      - /bin/true
+      - echo "building library..."

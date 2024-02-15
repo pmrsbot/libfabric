@@ -1,0 +1,50 @@
+# Variables are a key concept of GitLab CI as each job within a pipeline is
+# provided a prepared build environment that incorporates predefined variables
+# along with user-defined ones (project-level variable, SCHEDULER_PARAMETERS below)
+variables:
+  # SCHEDULER_PARAMETERS is a batch runner specific variable that is used for
+  # defining arguments that will be used when submitting a job to the appropriate
+  # scheduling system. For example, the below variable with Slurm will be:
+  #     sbatch --nodes=1 --partition=x86_64 --???
+  # Runner administrators can set a new variable name that serves the same purpose,
+  # if the appropriate variable is not found you will be warned during the job's execution.
+    ANL_POLARIS_SCHEDULER_PARAMETERS: ""
+    ANL_POLARIS_PROJECT_SERVICE_USER: "mpich"
+
+# Reference this hidden key with the keyword extends
+# and the contents will be merged.
+# Source: https://docs.gitlab.com/ee/ci/yaml/#extends
+.generic-login-shell:
+  # Tags are used to select specific Runners from a list of available runners.
+  # The admin who deploys / registers the runners defines these tags and by
+  # specifying them we can ensure our jobs are deployed on the correct system.
+  # You can identify the details of the runners available to the project by:
+  # Settings > CI/CD > Runners
+  tags:
+    - polaris
+    - shell
+  # Will ensure that the CI pipeline will 'only' run when initiated via the
+  # the web GUI (CI / CD -> Pipelines -> Run Pipeline) or scheduled pipelines
+  only:
+    - web
+    - schedules
+    - api
+    - triggers
+  before_script:
+    # We can use available system resources, in this case a module environment
+    # update accordingly to what is available on the system.
+    - module list
+    - which nvc
+    - which nvcc
+    - export CC=nvc
+
+# Each job must be assigned a stage and the stages can be defined to meet the
+# project requirements. The naming of the stages can be entirely driven by the project.
+stages:
+  - build
+
+job-build-libs:
+    extends: .generic-login-shell
+    stage: build
+    script:
+      - /bin/true

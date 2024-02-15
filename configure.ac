@@ -5,6 +5,8 @@ dnl Copyright (c) 2019-2020 Amazon.com, Inc. or its affiliates. All rights reser
 dnl
 dnl Process this file with autoconf to produce a configure script.
 
+# foo
+
 AC_PREREQ([2.60])
 AC_INIT([libfabric], [1.10.0rc2], [ofiwg@lists.openfabrics.org])
 AC_CONFIG_SRCDIR([src/fabric.c])

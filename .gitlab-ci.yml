@@ -11,6 +11,7 @@ variables:
     ANL_POLARIS_SCHEDULER_PARAMETERS: ""
     ANL_POLARIS_PROJECT_SERVICE_USER: "mpich"
 
+
 # report status to github PRs
 .report-status:
   variables:
@@ -75,4 +76,4 @@ job-build-libs:
     extends: .generic-login-shell
     stage: build
     script:
-      - /bin/true
+      - echo "building library..."

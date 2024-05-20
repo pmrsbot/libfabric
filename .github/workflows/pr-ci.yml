@@ -143,3 +143,14 @@ jobs:
         with:
           name: macos-12-config.log
           path: config.log
+  trigger-gitlab-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: eic/trigger-gitlab-ci@v1
+        project_id: 123
+        token: ${{ secrets.ALCF_GITLAB_TOKEN }}
+        ref_name: main
+        variables: |
+          GITHUB_REPOSITORYURL: ${{ github.repositoryUrl }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}

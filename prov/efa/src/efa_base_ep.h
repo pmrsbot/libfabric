@@ -1,34 +1,5 @@
-/*
- * Copyright (c) 2018-2022 Amazon.com, Inc. or its affiliates. All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: Copyright Amazon.com, Inc. or its affiliates. All rights reserved. */
 
 #ifndef EFA_BASE_EP_H
 #define EFA_BASE_EP_H
@@ -59,9 +30,8 @@ struct efa_recv_wr {
 	 *
 	 * @details
 	 * EFA device supports a maximum of 2 iov/SGE
-	 * For receive, we only use 1 SGE
 	 */
-	struct ibv_sge sge[1];
+	struct ibv_sge sge[2];
 };
 
 struct efa_base_ep {
@@ -98,10 +68,16 @@ int efa_base_ep_construct(struct efa_base_ep *base_ep,
 
 int efa_base_ep_getname(fid_t fid, void *addr, size_t *addrlen);
 
+int efa_qp_create(struct efa_qp **qp, struct ibv_qp_init_attr_ex *init_attr_ex);
+
 int efa_base_ep_create_qp(struct efa_base_ep *base_ep,
 			  struct ibv_qp_init_attr_ex *init_attr_ex);
 
-bool efa_base_ep_support_op_in_order_aligned_128_bytes(struct efa_base_ep *base_ep,
+void efa_base_ep_close_util_ep(struct efa_base_ep *base_ep);
+
+int efa_base_ep_destruct_qp(struct efa_base_ep *base_ep);
+
+bool efa_qp_support_op_in_order_aligned_128_bytes(struct efa_qp *qp,
 						       enum ibv_wr_opcode op);
 
 void efa_base_ep_write_eq_error(struct efa_base_ep *ep,

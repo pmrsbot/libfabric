@@ -59,10 +59,6 @@ static struct ep_test_params ep_ep_params[] = {
 		.retval = -FI_EINVAL},
 	{.type = FI_EP_DGRAM,
 		.retval = -FI_EINVAL},
-	{.type = FI_EP_SOCK_STREAM,
-		.retval = -FI_EINVAL},
-	{.type = FI_EP_SOCK_DGRAM,
-		.retval = -FI_EINVAL},
 	{.type = FI_EP_RDM,
 		.context = (void *)0xabcdef,
 		.retval = FI_SUCCESS},
@@ -215,8 +211,8 @@ Test(ep, ep_bind_cq)
 
 	cr_assert_not_null(ep->ep_obj);
 	cr_assert_eq(ep->ep.fid.fclass, FI_CLASS_EP);
-	cr_assert_eq(ep->ep_obj->txc.send_cq, tx_cq);
-	cr_assert_eq(ep->ep_obj->rxc.recv_cq, rx_cq);
+	cr_assert_eq(ep->ep_obj->txc->send_cq, tx_cq);
+	cr_assert_eq(ep->ep_obj->rxc->recv_cq, rx_cq);
 
 	cxit_destroy_ep();
 	cxit_destroy_cqs();
@@ -253,9 +249,9 @@ Test(ep, ep_bind_cq_eps)
 	ep2 = container_of(fid_ep2, struct cxip_ep, ep.fid);
 	cr_assert_not_null(ep2->ep_obj);
 
-	cr_assert_eq(ep->ep_obj->txc.send_cq, ep2->ep_obj->txc.send_cq,
+	cr_assert_eq(ep->ep_obj->txc->send_cq, ep2->ep_obj->txc->send_cq,
 		     "Send CQ mismatch");
-	cr_assert_eq(ep->ep_obj->rxc.recv_cq, ep2->ep_obj->rxc.recv_cq,
+	cr_assert_eq(ep->ep_obj->rxc->recv_cq, ep2->ep_obj->rxc->recv_cq,
 		     "Receive CQ mismatch");
 
 	ret = fi_close(&fid_ep2->fid);
@@ -812,10 +808,11 @@ ParameterizedTest(struct ep_getopt_args *param, ep, getopt_args)
 
 	if (ret == FI_SUCCESS) {
 		cr_assert_not_null(cxi_ep->ep_obj);
-		cr_assert_eq(*param->optval, cxi_ep->ep_obj->rxc.min_multi_recv,
+		cr_assert_eq(*param->optval,
+			     cxi_ep->ep_obj->rxc->min_multi_recv,
 			     "fi_getopt val mismatch. %zd != %zd",
 			     *param->optval,
-			     cxi_ep->ep_obj->rxc.min_multi_recv);
+			     cxi_ep->ep_obj->rxc->min_multi_recv);
 		cr_assert_eq(*param->optlen, sizeof(size_t),
 			     "fi_getopt len mismatch. %zd != %zd",
 			     *param->optlen, sizeof(size_t));
@@ -890,9 +887,11 @@ ParameterizedTest(struct ep_setopt_args *param, ep, setopt_args)
 
 	if (ret == FI_SUCCESS) {
 		cr_assert_not_null(cxi_ep->ep_obj);
-		cr_assert_eq(param->optval, cxi_ep->ep_obj->rxc.min_multi_recv,
+		cr_assert_eq(param->optval,
+			     cxi_ep->ep_obj->rxc->min_multi_recv,
 			     "fi_setopt val mismatch. %zd != %zd",
-			     param->optval, cxi_ep->ep_obj->rxc.min_multi_recv);
+			     param->optval,
+			     cxi_ep->ep_obj->rxc->min_multi_recv);
 	}
 
 	cxit_destroy_ep();
@@ -958,7 +957,7 @@ Test(ep, stx_ctx)
 		return;
 
 	ep = container_of(stx, struct cxip_ep, ep);
-	txc = &ep->ep_obj->txc;
+	txc = ep->ep_obj->txc;
 
 	/* Validate stx */
 	cr_assert_eq(txc->domain, dom);
@@ -1003,7 +1002,7 @@ Test(ep, srx_ctx)
 		return;
 
 	srx_ep = container_of(srx, struct cxip_ep, ep);
-	rxc = &srx_ep->ep_obj->rxc;
+	rxc = srx_ep->ep_obj->rxc;
 
 	/* Validate stx */
 	cr_assert_eq(rxc->domain, dom);
@@ -1290,6 +1289,7 @@ TestSuite(ep_caps, .timeout = CXIT_DEFAULT_TIMEOUT);
 void verify_ep_msg_cap(uint64_t flags)
 {
 	struct cxip_ep *ep;
+	struct cxip_rxc_hpc *rxc_hpc = NULL;
 	int ret;
 
 	cxit_setup_ep();
@@ -1313,25 +1313,31 @@ void verify_ep_msg_cap(uint64_t flags)
 
 	ep = container_of(&cxit_ep->fid, struct cxip_ep, ep.fid);
 
+	if (ep->ep_obj->rxc->protocol == FI_PROTO_CXI)
+		rxc_hpc = container_of(ep->ep_obj->rxc, struct cxip_rxc_hpc,
+				       base);
+
 	/* Requires knowledge of implementation */
 	if (flags & FI_SEND) {
-		cr_assert(ep->ep_obj->txc.enabled, "TX Enabled");
-		cr_assert(ep->ep_obj->txc.send_cq != NULL, "Send CQ");
+		cr_assert(ep->ep_obj->txc->enabled, "TX Enabled");
+		cr_assert(ep->ep_obj->txc->send_cq != NULL, "Send CQ");
 	}
 
 	if (flags & FI_RECV) {
-		cr_assert(ep->ep_obj->rxc.state == RXC_ENABLED ||
-			  ep->ep_obj->rxc.state == RXC_ENABLED_SOFTWARE,
+		cr_assert(ep->ep_obj->rxc->state == RXC_ENABLED ||
+			  ep->ep_obj->rxc->state == RXC_ENABLED_SOFTWARE,
 			  "RX Enabled");
-		cr_assert(ep->ep_obj->rxc.recv_cq != NULL, "Receive CQ");
-		cr_assert(ep->ep_obj->rxc.rx_evtq.eq != NULL, "RX H/W EQ");
-		cr_assert(ep->ep_obj->rxc.rx_cmdq != NULL, "RX TGT CMDQ");
-		cr_assert(ep->ep_obj->rxc.tx_cmdq != NULL, "RX TX CMDQ");
+		cr_assert(ep->ep_obj->rxc->recv_cq != NULL, "Receive CQ");
+		cr_assert(ep->ep_obj->rxc->rx_evtq.eq != NULL, "RX H/W EQ");
+		cr_assert(ep->ep_obj->rxc->rx_cmdq != NULL, "RX TGT CMDQ");
+		if (rxc_hpc)
+			cr_assert(rxc_hpc->tx_cmdq != NULL, "RX TX CMDQ");
 	} else {
-		cr_assert(ep->ep_obj->rxc.state == RXC_ENABLED, "R/X enabled");
-		cr_assert(ep->ep_obj->rxc.rx_evtq.eq == NULL, "RX H/W EQ");
-		cr_assert(ep->ep_obj->rxc.rx_cmdq == NULL, "RX TGT CMDQ");
-		cr_assert(ep->ep_obj->rxc.tx_cmdq == NULL, "RX TX CMDQ");
+		cr_assert(ep->ep_obj->rxc->state == RXC_ENABLED, "R/X enabled");
+		cr_assert(ep->ep_obj->rxc->rx_evtq.eq == NULL, "RX H/W EQ");
+		cr_assert(ep->ep_obj->rxc->rx_cmdq == NULL, "RX TGT CMDQ");
+		if (rxc_hpc)
+			cr_assert(rxc_hpc->tx_cmdq == NULL, "RX TX CMDQ");
 	}
 
 	cxit_teardown_rma();

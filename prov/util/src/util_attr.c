@@ -247,7 +247,12 @@ static int ofi_info_to_util(uint32_t version, const struct fi_provider *prov,
 	if (ofi_dup_addr(core_info, *util_info))
 		goto err;
 
-	assert(core_info->domain_attr->name);
+	/* Release 1.4 brought standardized domain names across IP based
+	 * providers. Before this release, the usNIC provider would return a
+	 * NULL domain name from fi_getinfo. For compatibility reasons, allow a
+	 * NULL domain name when apps are requesting version < 1.4.
+	 */
+	assert(FI_VERSION_LT(1, 4) || core_info->domain_attr->name);
 
 	if (core_info->domain_attr->name) {
 		(*util_info)->domain_attr->name =
@@ -454,8 +459,10 @@ static int fi_progress_level(enum fi_progress progress_model)
 		return 1;
 	case FI_PROGRESS_MANUAL:
 		return 2;
-	case FI_PROGRESS_UNSPEC:
+	case FI_PROGRESS_CONTROL_UNIFIED:
 		return 3;
+	case FI_PROGRESS_UNSPEC:
+		return 4;
 	default:
 		return -1;
 	}
@@ -572,7 +579,8 @@ int ofi_check_domain_attr(const struct fi_provider *prov, uint32_t api_version,
 		return -FI_ENODATA;
 	}
 
-	if (fi_progress_level(user_attr->data_progress) <
+	if (user_attr->data_progress == FI_PROGRESS_CONTROL_UNIFIED ||
+	    fi_progress_level(user_attr->data_progress) <
 	    fi_progress_level(prov_attr->data_progress)) {
 		FI_INFO(prov, FI_LOG_CORE, "Invalid data progress model\n");
 		return -FI_ENODATA;

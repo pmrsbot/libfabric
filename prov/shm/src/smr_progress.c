@@ -99,8 +99,6 @@ static int smr_progress_resp_entry(struct smr_ep *ep, struct smr_resp *resp,
 		break;
 	case smr_src_ipc:
 		assert(pending->mr[0]);
-		if (pending->mr[0]->iface == FI_HMEM_ZE)
-			close(pending->fd);
 		break;
 	case smr_src_sar:
 		sar_buf = smr_freestack_get_entry_from_index(
@@ -654,7 +652,7 @@ static void smr_do_atomic(void *src, struct ofi_mr *dst_mr, void *dst,
 	}
 
 	if (flags & SMR_RMA_REQ)
-		memcpy(src, op == FI_ATOMIC_READ ? tmp_dst : tmp_result,
+		memcpy(src, op == FI_ATOMIC_READ ? cpy_dst : tmp_result,
 		       cnt * ofi_datatype_size(datatype));
 
 	if (cpy_dst != dst) {

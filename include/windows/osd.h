@@ -205,6 +205,9 @@ extern "C" {
 #ifndef ESTALE
 # define ESTALE			246	/* Stale NFS file handle */
 #endif
+#ifndef EREMOTEIO
+# define EREMOTEIO		247	/* Remote I/O error */
+#endif
 
 /* MSG_NOSIGNAL doesn't exist on Windows */
 #ifndef MSG_NOSIGNAL
@@ -280,6 +283,9 @@ do						\
 #define ntohll _byteswap_uint64
 #define be64toh ntohll
 #define strncasecmp _strnicmp
+
+#define access(path, mode) _access(path, mode)
+#define F_OK 0
 
 typedef int pid_t;
 #define getpid (int)GetCurrentProcessId
@@ -922,6 +928,11 @@ static inline char *strcasestr(const char *haystack, const char *needle)
 	free(uhaystack);
 
 	return pos;
+}
+
+static inline char *strtok_r(char *str, const char *delimiters, char **saveptr)
+{
+	return strtok_s(str, delimiters, saveptr);
 }
 
 #ifndef _SC_PAGESIZE

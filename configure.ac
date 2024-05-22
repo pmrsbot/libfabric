@@ -9,7 +9,7 @@ dnl
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.60])
-AC_INIT([libfabric], [1.21.0a1], [ofiwg@lists.openfabrics.org])
+AC_INIT([libfabric], [1.22.0a1], [ofiwg@lists.openfabrics.org])
 AC_CONFIG_SRCDIR([src/fabric.c])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR(config)
@@ -59,7 +59,7 @@ AC_DEFINE_UNQUOTED([BUILD_ID],["$with_build_id"],
 
 # Override autoconf default CFLAG settings (e.g. "-g -O2") while still
 # allowing the user to explicitly set CFLAGS=""
-: ${CFLAGS="-fvisibility=hidden ${base_c_warn_flags}"}
+: ${CFLAGS="-pipe -fvisibility=hidden ${base_c_warn_flags}"}
 
 # AM_PROG_AS would set CFLAGS="-g -O2" by default if not set already so it
 # should not be called earlier
@@ -426,14 +426,16 @@ AC_ARG_ENABLE([xpmem],
 			      PATH: enable xpmem and use xpmem installed under PATH)])],
 	      )
 
-FI_CHECK_PACKAGE([xpmem],
-		 [xpmem.h],
-		 [xpmem],
-		 [xpmem_make],
-		 [],
-		 [$enable_xpmem],
-		 [$enable_xpmem/lib64],
-		 [xpmem_happy=1])
+AS_IF([test x"$enable_xpmem" != x"no"],
+      [FI_CHECK_PACKAGE([xpmem],
+                        [xpmem.h],
+                        [xpmem],
+                        [xpmem_make],
+                        [],
+                        [$enable_xpmem],
+                        [],
+                        [xpmem_happy=1])
+      ])
 
 AS_IF([test x"$enable_xpmem" != x"no" && test -n "$enable_xpmem" && test "$xpmem_happy" = "0" ],
 	[AC_MSG_ERROR([XPMEM support requested but XPMEM runtime not available.])])
@@ -1005,6 +1007,9 @@ FI_PROVIDER_SETUP([sockets])
 FI_PROVIDER_SETUP([verbs])
 FI_PROVIDER_SETUP([efa])
 FI_PROVIDER_SETUP([cxi])
+dnl The usnic provider must be setup after the verbs provider.  See
+dnl prov/usnic/configure.m4 for details.
+FI_PROVIDER_SETUP([usnic])
 FI_PROVIDER_SETUP([udp])
 FI_PROVIDER_SETUP([tcp])
 FI_PROVIDER_SETUP([rxm])

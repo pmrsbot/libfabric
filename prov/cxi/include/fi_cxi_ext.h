@@ -56,7 +56,23 @@ enum {
 	FI_OPT_CXI_GET_OPTIMIZED_MRS,			/* bool */
 	FI_OPT_CXI_SET_PROV_KEY_CACHE,			/* bool */
 	FI_OPT_CXI_GET_PROV_KEY_CACHE,			/* bool */
+	FI_OPT_CXI_SET_RNR_MAX_RETRY_TIME,		/* uint64_t */
 };
+
+/*
+ * Defines for compatibility between main branch features and release
+ * branches back porting of features required for use. Any value
+ * included here should map exactly to the value established in the
+ * main branch (enum or define) and this CXI equivalent will exist forever.
+ */
+#define FI_CXI_CNTR_EVENTS_BYTES	1	/* FI_CNTR_EVENTS_BYTES */
+
+/*
+ * TODO: Set this to the upstream value prior to releasing software.
+ * This flag returned in a completion and indicates that the message was
+ * truncated and that the length indicates the truncated message length.
+ */
+#define FI_CXI_TRUNC		(1ULL << 56)
 
 /*
  * Execute a given libfabric atomic memory operation as a PCIe operation as

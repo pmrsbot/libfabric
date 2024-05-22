@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2016 by Argonne National Laboratory.
- * Copyright (C) 2021-2023 Cornelis Networks.
+ * Copyright (C) 2021-2024 Cornelis Networks.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -240,7 +240,7 @@ struct fi_opx_ep_tx {
 
 	volatile union fi_opx_hfi1_pio_state	*pio_state;			/* 1 qw = 8 bytes */
 	volatile uint64_t *			pio_scb_sop_first;
-	uint32_t				dcomp_threshold;            /* const; messages over this size will always force delivery completition */
+	uint32_t				sdma_bounce_buf_threshold;
 	uint16_t 				pio_max_eager_tx_bytes;
 	uint16_t 				pio_flow_eager_tx_bytes;
 
@@ -523,10 +523,7 @@ struct fi_opx_ep {
 	bool					is_rx_cq_bound;
 	bool					use_expected_tid_rzv;
 	uint8_t				        unused_cacheline5[3];
-
-	uint32_t				unused_cacheline5_u32[1];
-	uint32_t				mcache_flush_counter;
-	uint32_t				unused_cacheline5b;
+	uint32_t				unused_cacheline5_u32[3];
 
 	ofi_spin_t				lock; /* lock size varies based on ENABLE_DEBUG*/
 
@@ -690,7 +687,7 @@ static void fi_opx_dump_daos_av_addr_rank(struct fi_opx_ep *opx_ep,
 			if (cur_av_rank) {
 				union fi_opx_addr addr;
 				addr.fi = cur_av_rank->fi_addr;
-				
+
 				if ((addr.uid.lid == find_addr.uid.lid) && (cur_av_rank->key.rank == opx_ep->daos_info.rank)) {
 					found = 1;
 					FI_DBG_TRACE(fi_opx_global.prov, FI_LOG_EP_DATA, "Dump av_rank_hashmap[%d] = rank:%d LID:0x%x fi_addr:0x%08lx - Found.\n",
@@ -751,7 +748,7 @@ static struct fi_opx_daos_av_rank * fi_opx_get_daos_av_rank(struct fi_opx_ep *op
 			if (cur_av_rank) {
 				union fi_opx_addr addr;
 				addr.fi = cur_av_rank->fi_addr;
-				
+
 				FI_DBG_TRACE(fi_opx_global.prov, FI_LOG_EP_DATA,
 					"GET Dump av_rank_hashmap[%d] = rank:%d LID:0x%x fi_addr:0x%08lx\n",
 					i++, cur_av_rank->key.rank, addr.uid.lid, addr.fi);
@@ -1060,7 +1057,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 					break;
 				}
 			}
- 
+
 			FI_TRACE(fi_opx_global.prov, FI_LOG_EP_DATA,
 				"INJECT send_len %lu <= recv_len %lu; enqueue cq (completed)\n", send_len, recv_len);
 
@@ -1538,6 +1535,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 				};
 				const uint64_t immediate_byte_count = immediate_info.byte_count;
 				const uint64_t immediate_qw_count = immediate_info.qw_count;
+				const uint64_t immediate_fragment = ((immediate_byte_count + immediate_qw_count + 63) >> 6);
 				const uint64_t immediate_block_count = immediate_info.block_count;
 				const uint64_t immediate_total = immediate_byte_count +
 								immediate_qw_count * sizeof(uint64_t) +
@@ -1595,7 +1593,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 				}
 
 				if (immediate_block_count) {
-					const union cacheline * const immediate_block = p->rendezvous.contiguous.immediate_block;
+					const union cacheline * const immediate_block = &p->rendezvous.contiguous.cache_line_1 + immediate_fragment;
 					union cacheline * rbuf_block = (union cacheline *)rbuf;
 					for (i=0; i<immediate_block_count; ++i) {
 						rbuf_block[i] = immediate_block[i];
@@ -1605,7 +1603,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 				/* up to 1 block of immediate end data after the immediate blocks
 					Copy this to the end of rbuf */
 				if (immediate_end_block_count) {
-					const union cacheline * const immediate_block = p->rendezvous.contiguous.immediate_block;
+					const union cacheline * const immediate_block = &p->rendezvous.contiguous.cache_line_1 + immediate_fragment;
 					uint8_t *rbuf_start = (uint8_t *)recv_buf;
 					rbuf_start += xfer_len - (immediate_end_block_count << 6);
 					memcpy(rbuf_start, immediate_block[immediate_block_count].qw,
@@ -1666,6 +1664,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 				};
 				const uint64_t immediate_byte_count = immediate_info.byte_count;
 				const uint64_t immediate_qw_count = immediate_info.qw_count;
+				const uint64_t immediate_fragment = ((immediate_byte_count + immediate_qw_count + 63) >> 6);
 				const uint64_t immediate_block_count = immediate_info.block_count;
 				const uint64_t immediate_total = immediate_byte_count +
 								immediate_qw_count * sizeof(uint64_t) +
@@ -1724,7 +1723,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 				}
 
 				if (immediate_block_count) {
-					const union cacheline * const immediate_block = p->rendezvous.contiguous.immediate_block;
+					const union cacheline * const immediate_block = &p->rendezvous.contiguous.cache_line_1 + immediate_fragment;
 					union cacheline * rbuf_block = (union cacheline *)rbuf;
 					for (i=0; i<immediate_block_count; ++i) {
 						rbuf_block[i] = immediate_block[i];
@@ -1743,7 +1742,7 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 				/* up to 1 block of immediate end data after the immediate blocks
 					Copy this to the end of rbuf */
 				if (immediate_end_block_count) {
-					const union cacheline * const immediate_block = p->rendezvous.contiguous.immediate_block;
+					const union cacheline * const immediate_block = &p->rendezvous.contiguous.cache_line_1 + immediate_fragment;
 					uint8_t *rbuf_start = (uint8_t *)recv_buf;
 					rbuf_start += xfer_len - (immediate_end_block_count << 6);
 					if (!is_hmem) {
@@ -1816,8 +1815,8 @@ void complete_receive_operation_internal (struct fid_ep *ep,
 			if (lock_required) { fprintf(stderr, "%s:%s():%d\n", __FILE__, __func__, __LINE__); abort(); }
 			fi_opx_context_slist_insert_tail(context, rx->cq_pending_ptr);
 
-			/* Post a E_TRUNC to our local RX error queue because a client called receive 
-			with too small a buffer.  Tell them about it via the error cq */ 
+			/* Post a E_TRUNC to our local RX error queue because a client called receive
+			with too small a buffer.  Tell them about it via the error cq */
 
 			struct fi_opx_context_ext * ext = NULL;
 			if (is_context_ext) {
@@ -1897,27 +1896,27 @@ ssize_t fi_opx_shm_dynamic_tx_connect(const unsigned is_intranode,
 				      const unsigned rx_id,
 				      const uint8_t hfi1_unit)
 {
-	assert(hfi1_unit < FI_OPX_MAX_HFIS);
-
 	if (!is_intranode) {
 		return FI_SUCCESS;
 	}
 
+	assert(hfi1_unit < FI_OPX_MAX_HFIS);
+	assert(rx_id < OPX_SHM_MAX_CONN_NUM);
+
+#ifdef OPX_DAOS
 	uint32_t segment_index;
 
 	if (!opx_ep->daos_info.hfi_rank_enabled) {
 		assert(rx_id < 256);
 		segment_index = OPX_SHM_SEGMENT_INDEX(hfi1_unit, rx_id);
 	} else {
-		segment_index = rx_id;
+		segment_index = rx_id & OPX_SHM_MAX_CONN_MASK;
 	}
+#else
+	uint32_t segment_index = rx_id & OPX_SHM_MAX_CONN_MASK;
+#endif
 
-	if (OFI_UNLIKELY(segment_index >= OPX_SHM_MAX_CONN_NUM)) {
-		FI_LOG(opx_ep->tx->shm.prov, FI_LOG_WARN, FI_LOG_FABRIC,
-			"Unable to connect shm object hfi_unit=%hhu, rx_id=%u, segment_index=%u (too large)\n",
-			hfi1_unit, rx_id, segment_index);
-		return -FI_E2BIG;
-	} else if (OFI_LIKELY(opx_ep->tx->shm.fifo_segment[segment_index] != NULL)) {
+	if (OFI_LIKELY(opx_ep->tx->shm.fifo_segment[segment_index] != NULL)) {
 		/* Connection already established */
 		return FI_SUCCESS;
 	}
@@ -1926,9 +1925,11 @@ ssize_t fi_opx_shm_dynamic_tx_connect(const unsigned is_intranode,
 	char buffer[OPX_JOB_KEY_STR_SIZE + 32];
 	int inst = 0;
 
+#ifdef OPX_DAOS
 	if (opx_ep->daos_info.hfi_rank_enabled) {
 		inst = opx_ep->daos_info.rank_inst;
 	}
+#endif
 
 	snprintf(buffer, sizeof(buffer), OPX_SHM_FILE_NAME_PREFIX_FORMAT,
 		opx_ep->domain->unique_job_key_str, hfi1_unit, inst);
@@ -2137,6 +2138,7 @@ void fi_opx_ep_rx_process_header_rzv_data(struct fi_opx_ep * opx_ep,
 	break;
 	case FI_OPX_HFI_DPUT_OPCODE_RZV_TID:
 	{
+		FI_OPX_DEBUG_COUNTERS_INC(opx_ep->debug_counters.expected_receive.tid_rcv_pkts);
 		struct fi_opx_rzv_completion * rzv_comp = (struct fi_opx_rzv_completion *)(hdr->dput.target.rzv.completion_vaddr);
 		union fi_opx_context *target_context = rzv_comp->context;
 		assert(target_context);
@@ -2183,7 +2185,7 @@ void fi_opx_ep_rx_process_header_rzv_data(struct fi_opx_ep * opx_ep,
 			} else {
 				memcpy(rbuf_qws, sbuf_qws, bytes);
 			}
-			FI_OPX_DEBUG_COUNTERS_INC(opx_ep->debug_counters.expected_receive.tid_replays);
+			FI_OPX_DEBUG_COUNTERS_INC(opx_ep->debug_counters.expected_receive.tid_rcv_pkts_replays);
 		}
 #ifndef NDEBUG
 		else { /* Debug, tracking where the TID wrote even though we don't memcpy here */
@@ -2990,7 +2992,7 @@ void fi_opx_ep_do_pending_work(struct fi_opx_ep *opx_ep)
 	}
 }
 
-static inline __attribute__((always_inline))
+static inline
 void fi_opx_ep_rx_poll (struct fid_ep *ep,
 			const uint64_t caps,
 			const enum ofi_reliability_kind reliability,
@@ -3576,7 +3578,7 @@ ssize_t fi_opx_ep_rx_recvmsg_internal (struct fi_opx_ep *opx_ep,
 		FI_WARN(fi_opx_global.prov, FI_LOG_EP_DATA,"===================================== POST RECVMSG RETURN FI_ENOMEM\n");
 		return -FI_ENOMEM;
 	}
-	
+
 	ext->opx_context.flags = flags | FI_OPX_CQ_CONTEXT_EXT;
 	ext->opx_context.byte_counter = (uint64_t)-1;
 	ext->opx_context.src_addr = fi_opx_ep_get_src_addr(opx_ep, av_type, msg->addr);
@@ -4003,7 +4005,7 @@ ssize_t fi_opx_ep_tx_send_internal (struct fid_ep *ep,
 		FI_DBG_TRACE(fi_opx_global.prov, FI_LOG_EP_DATA,
 			"===================================== SEND -- Eager send failed, trying next method\n");
 	}
-	
+
 #ifndef FI_OPX_MP_EGR_DISABLE
 	if (is_contiguous &&
 	    total_len <= FI_OPX_MP_EGR_MAX_PAYLOAD_BYTES &&

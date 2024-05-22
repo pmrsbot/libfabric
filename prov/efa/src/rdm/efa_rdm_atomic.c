@@ -1,35 +1,5 @@
-/*
- * Copyright (c) 2019-2020 Amazon.com, Inc. or its affiliates.
- * All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: Copyright Amazon.com, Inc. or its affiliates. All rights reserved. */
 
 #include <ofi_iov.h>
 #include <ofi_atomic.h>
@@ -153,7 +123,6 @@ ssize_t efa_rdm_atomic_generic_efa(struct efa_rdm_ep *efa_rdm_ep,
 	txe = efa_rdm_atomic_alloc_txe(efa_rdm_ep, peer, msg, atomic_ex, op, flags);
 	if (OFI_UNLIKELY(!txe)) {
 		err = -FI_EAGAIN;
-		efa_rdm_ep_progress_internal(efa_rdm_ep);
 		goto out;
 	}
 
@@ -206,7 +175,6 @@ ssize_t efa_rdm_atomic_generic_efa(struct efa_rdm_ep *efa_rdm_ep,
 	}
 
 	if (OFI_UNLIKELY(err)) {
-		efa_rdm_ep_progress_internal(efa_rdm_ep);
 		efa_rdm_txe_release(txe);
 		peer->next_msg_id--;
 	}
@@ -279,9 +247,8 @@ efa_rdm_atomic_writemsg(struct fid_ep *ep,
 	void *shm_desc[EFA_RDM_IOV_LIMIT] = {NULL};
 	int err;
 
-	EFA_DBG(FI_LOG_EP_DATA,
-	       "%s: iov_len: %lu flags: %lx\n",
-	       __func__, ofi_total_ioc_cnt(msg->msg_iov, msg->iov_count), flags);
+	EFA_DBG(FI_LOG_EP_DATA, "iov_len: %lu flags: %lx\n",
+		ofi_total_ioc_cnt(msg->msg_iov, msg->iov_count), flags);
 
 	efa_rdm_ep = container_of(ep, struct efa_rdm_ep, base_ep.util_ep.ep_fid.fid);
 	err = efa_rdm_ep_cap_check_atomic(efa_rdm_ep);
@@ -327,8 +294,8 @@ efa_rdm_atomic_writev(struct fid_ep *ep,
 	msg.context = context;
 	msg.data = 0;
 
-	EFA_DBG(FI_LOG_EP_DATA, "%s total_count=%ld atomic_op=%d\n", __func__,
-	       ofi_total_ioc_cnt(iov, count), msg.op);
+	EFA_DBG(FI_LOG_EP_DATA, "total_count=%ld atomic_op=%d\n",
+		ofi_total_ioc_cnt(iov, count), msg.op);
 
 	return efa_rdm_atomic_writemsg(ep, &msg, 0);
 }
@@ -369,8 +336,8 @@ efa_rdm_atomic_readwritemsg(struct fid_ep *ep,
 		return -errno;
 	}
 
-	EFA_DBG(FI_LOG_EP_DATA, "%s total_len=%ld atomic_op=%d\n", __func__,
-	       ofi_total_ioc_cnt(msg->msg_iov, msg->iov_count), msg->op);
+	EFA_DBG(FI_LOG_EP_DATA, "total_len=%ld atomic_op=%d\n",
+		ofi_total_ioc_cnt(msg->msg_iov, msg->iov_count), msg->op);
 
 	efa_rdm_ep = container_of(ep, struct efa_rdm_ep, base_ep.util_ep.ep_fid.fid);
 	err = efa_rdm_ep_cap_check_atomic(efa_rdm_ep);
@@ -476,9 +443,8 @@ efa_rdm_atomic_compwritemsg(struct fid_ep *ep,
 		return -errno;
 	}
 
-	EFA_DBG(FI_LOG_EP_DATA,
-	       "%s: iov_len: %lu flags: %lx\n",
-	       __func__, ofi_total_ioc_cnt(msg->msg_iov, msg->iov_count), flags);
+	EFA_DBG(FI_LOG_EP_DATA, "iov_len: %lu flags: %lx\n",
+		ofi_total_ioc_cnt(msg->msg_iov, msg->iov_count), flags);
 
 	efa_rdm_ep = container_of(ep, struct efa_rdm_ep, base_ep.util_ep.ep_fid.fid);
 	err = efa_rdm_ep_cap_check_atomic(efa_rdm_ep);

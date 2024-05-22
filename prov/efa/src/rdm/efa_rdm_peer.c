@@ -1,35 +1,5 @@
-/*
- * Copyright (c) 2019-2023 Amazon.com, Inc. or its affiliates.
- * All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: Copyright Amazon.com, Inc. or its affiliates. All rights reserved. */
 
 #include "efa.h"
 #include "efa_av.h"
@@ -54,7 +24,6 @@ void efa_rdm_peer_construct(struct efa_rdm_peer *peer, struct efa_rdm_ep *ep, st
 	peer->efa_fiaddr = conn->fi_addr;
 	peer->is_self = efa_is_same_addr(&ep->base_ep.src_addr, conn->ep_addr);
 	peer->host_id = peer->is_self ? ep->host_id : 0;	/* Peer host id is exchanged via handshake */
-	peer->num_read_msg_in_flight = 0;
 	peer->num_runt_bytes_in_flight = 0;
 	ofi_recvwin_buf_alloc(&peer->robuf, efa_env.recvwin_size);
 	dlist_init(&peer->outstanding_tx_pkts);
@@ -302,7 +271,8 @@ int efa_rdm_peer_select_readbase_rtm(struct efa_rdm_peer *peer,
 	int op = ope->op;
 
 	assert(op == ofi_op_tagged || op == ofi_op_msg);
-	if (peer->num_read_msg_in_flight == 0 &&
+
+	if (efa_rdm_ep_domain(ep)->num_read_msg_in_flight == 0 &&
 	    efa_rdm_peer_get_runt_size(peer, ep, ope) > 0 &&
 	    !(ope->fi_flags & FI_DELIVERY_COMPLETE)) {
 		return (op == ofi_op_tagged) ? EFA_RDM_RUNTREAD_TAGRTM_PKT

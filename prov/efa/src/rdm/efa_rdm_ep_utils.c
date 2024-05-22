@@ -9,7 +9,6 @@
 #include <ofi_iov.h>
 #include "efa.h"
 #include "efa_av.h"
-#include "efa_cq.h"
 #include "efa_rdm_msg.h"
 #include "efa_rdm_rma.h"
 #include "efa_rdm_atomic.h"
@@ -190,7 +189,7 @@ struct efa_rdm_ope *efa_rdm_ep_alloc_rxe(struct efa_rdm_ep *ep, fi_addr_t addr, 
 		break;
 	default:
 		EFA_WARN(FI_LOG_EP_CTRL,
-			"Unknown operation while %s\n", __func__);
+			"Unknown operation for RX entry allocation\n");
 		assert(0 && "Unknown operation");
 	}
 
@@ -210,9 +209,10 @@ int efa_rdm_ep_post_user_recv_buf(struct efa_rdm_ep *ep, struct efa_rdm_ope *rxe
 {
 	struct efa_rdm_pke *pkt_entry;
 	struct efa_mr *mr;
-	int err;
+	size_t rx_iov_offset = 0;
+	int err, rx_iov_index = 0;
 
-	assert(rxe->iov_count == 1);
+	assert(rxe->iov_count > 0  && rxe->iov_count <= ep->rx_iov_limit);
 	assert(rxe->iov[0].iov_len >= ep->msg_prefix_size);
 	pkt_entry = (struct efa_rdm_pke *)rxe->iov[0].iov_base;
 	assert(pkt_entry);
@@ -229,17 +229,32 @@ int efa_rdm_ep_post_user_recv_buf(struct efa_rdm_ep *ep, struct efa_rdm_ope *rxe
 	pkt_entry->alloc_type = EFA_RDM_PKE_FROM_USER_BUFFER;
 	pkt_entry->flags = EFA_RDM_PKE_IN_USE;
 	pkt_entry->next = NULL;
+	pkt_entry->ep = ep;
 	/*
 	 * The actual receiving buffer size (pkt_size) is
-	 *    rxe->total_len - sizeof(struct efa_rdm_pke)
+	 *    (total IOV length) - sizeof(struct efa_rdm_pke)
 	 * because the first part of user buffer was used to
 	 * construct pkt_entry. The actual receiving buffer
 	 * posted to device starts from pkt_entry->wiredata.
 	 */
-	pkt_entry->pkt_size = rxe->iov[0].iov_len - sizeof(struct efa_rdm_pke);
-
+	pkt_entry->pkt_size = ofi_total_iov_len(rxe->iov, rxe->iov_count) - sizeof *pkt_entry;
 	pkt_entry->ope = rxe;
 	rxe->state = EFA_RDM_RXE_MATCHED;
+
+	err = ofi_iov_locate(rxe->iov, rxe->iov_count, ep->msg_prefix_size, &rx_iov_index, &rx_iov_offset);
+	if (OFI_UNLIKELY(err)) {
+		EFA_WARN(FI_LOG_CQ, "ofi_iov_locate failure: %s (%d)\n", fi_strerror(-err), -err);
+		return err;
+	}
+	assert(rx_iov_index < rxe->iov_count);
+	assert(rx_iov_offset < rxe->iov[rx_iov_index].iov_len);
+
+	if (rx_iov_index > 0) {
+		assert(rxe->iov_count - rx_iov_index == 1);
+		pkt_entry->payload = (char *) rxe->iov[rx_iov_index].iov_base + rx_iov_offset;
+		pkt_entry->payload_mr = rxe->desc[rx_iov_index];
+		pkt_entry->payload_size = ofi_total_iov_len(&rxe->iov[rx_iov_index], rxe->iov_count - rx_iov_index) - rx_iov_offset;
+	}
 
 	err = efa_rdm_pke_recvv(&pkt_entry, 1);
 	if (OFI_UNLIKELY(err)) {
@@ -328,8 +343,7 @@ void efa_rdm_ep_record_tx_op_submitted(struct efa_rdm_ep *ep, struct efa_rdm_pke
 	if (peer)
 		peer->efa_outstanding_tx_ops++;
 
-	if (ope)
-		ope->efa_outstanding_tx_ops++;
+	ope->efa_outstanding_tx_ops++;
 #if ENABLE_DEBUG
 	ep->efa_total_posted_tx_ops++;
 #endif
@@ -654,7 +668,7 @@ void efa_rdm_ep_post_handshake_or_queue(struct efa_rdm_ep *ep, struct efa_rdm_pe
 		EFA_WARN(FI_LOG_EP_CTRL,
 			"Failed to post HANDSHAKE to peer %ld: %s\n",
 			peer->efa_fiaddr, fi_strerror(-err));
-		efa_base_ep_write_eq_error(&ep->base_ep, FI_EIO, FI_EFA_ERR_PEER_HANDSHAKE);
+		efa_base_ep_write_eq_error(&ep->base_ep, err, FI_EFA_ERR_PEER_HANDSHAKE);
 		return;
 	}
 
@@ -681,42 +695,3 @@ size_t efa_rdm_ep_get_memory_alignment(struct efa_rdm_ep *ep, enum fi_hmem_iface
 	return memory_alignment;
 }
 
-/**
- * @brief Get the vendor error code for an endpoint's CQ
- *
- * This function is essentially a wrapper for `ibv_wc_read_vendor_err()`; making
- * a best-effort attempt to promote the error code to a proprietary EFA
- * provider error code.
- *
- * @param[in]	ep	EFA RDM endpoint
- * @return	EFA-specific error code
- * @sa		#EFA_PROV_ERRNOS
- *
- * @todo Currently, this only checks for unresponsive receiver
- * (#EFA_IO_COMP_STATUS_LOCAL_ERROR_UNRESP_REMOTE) and attempts to promote it to
- * #FI_EFA_ERR_ESTABLISHED_RECV_UNRESP. This should be expanded to handle other
- * RDMA Core error codes (#EFA_IO_COMP_STATUSES) for the sake of more accurate
- * error reporting
- */
-int efa_rdm_ep_get_prov_errno(struct efa_rdm_ep *ep) {
-	uint32_t vendor_err = ibv_wc_read_vendor_err(ep->ibv_cq_ex);
-	struct efa_rdm_pke *pkt_entry = (void *) (uintptr_t) ep->ibv_cq_ex->wr_id;
-	struct efa_rdm_peer *peer;
-
-	if (OFI_LIKELY(pkt_entry && pkt_entry->addr))
-		peer = efa_rdm_ep_get_peer(ep, pkt_entry->addr);
-	else
-		return vendor_err;
-
-	switch (vendor_err) {
-	case EFA_IO_COMP_STATUS_LOCAL_ERROR_UNRESP_REMOTE: {
-		if (peer->flags & EFA_RDM_PEER_HANDSHAKE_RECEIVED)
-			vendor_err = FI_EFA_ERR_ESTABLISHED_RECV_UNRESP;
-		break;
-	}
-	default:
-		break;
-	}
-
-	return vendor_err;
-}

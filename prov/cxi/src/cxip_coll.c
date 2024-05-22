@@ -29,11 +29,13 @@
 #define _MM_GET_FLUSH_ZERO_MODE() ({0;})
 #endif
 
-#define	TRACE_PKT(fmt, ...)	CXIP_TRACE(CXIP_TRC_COLL_PKT, fmt, \
+#define	TRACE_PKT(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_COLL_PKT, fmt, \
 					   ##__VA_ARGS__)
-#define	TRACE_JOIN(fmt, ...)	CXIP_TRACE(CXIP_TRC_COLL_JOIN, fmt, \
+#define	TRACE_CURL(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_COLL_CURL, fmt, \
 					   ##__VA_ARGS__)
-#define	TRACE_DEBUG(fmt, ...)	CXIP_TRACE(CXIP_TRC_COLL_DEBUG, fmt, \
+#define	TRACE_JOIN(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_COLL_JOIN, fmt, \
+					   ##__VA_ARGS__)
+#define	TRACE_DEBUG(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_COLL_DEBUG, fmt, \
 					   ##__VA_ARGS__)
 
 // TODO regularize usage of these
@@ -99,21 +101,21 @@
 struct cxip_coll_cookie {
 	uint32_t mcast_id:13;
 	uint32_t red_id:3;
-	uint32_t magic: 15;
-	uint32_t retry: 1;
+	uint32_t magic: 16;
 } __attribute__((__packed__));           /* size  4b */
 
 /* Packed header bits and cookie from above */
 struct cxip_coll_hdr {
-        uint64_t seqno:10;
-        uint64_t arm:1;
-        uint64_t op:6;
-        uint64_t redcnt:20;
-        uint64_t resno:10;
-        uint64_t red_rc:4;
-        uint64_t repsum_m:8;
-        uint64_t repsum_ovflid:2;
-        uint64_t pad:3;
+	uint64_t seqno:10;
+	uint64_t arm:1;
+	uint64_t op:6;
+	uint64_t redcnt:20;
+	uint64_t resno:10;
+	uint64_t red_rc:4;
+	uint64_t repsum_m:8;
+	uint64_t repsum_ovflid:2;
+	uint64_t retry:1;
+	uint64_t pad:2;
         struct cxip_coll_cookie cookie;
 } __attribute__((__packed__));		/* size 12b */
 
@@ -260,6 +262,7 @@ void _dump_red_pkt(struct red_pkt *pkt, char *dir)
 	TRACE_PKT("---------------\n");
 	TRACE_PKT("Reduction packet (%s):\n", dir);
 	TRACE_PKT("  seqno        = %d\n", pkt->hdr.seqno);
+	TRACE_PKT("  retry        = %d\n", pkt->hdr.retry);
 	TRACE_PKT("  arm          = %d\n", pkt->hdr.arm);
 	TRACE_PKT("  op           = %d\n", pkt->hdr.op);
 	TRACE_PKT("  redcnt       = %d\n", pkt->hdr.redcnt);
@@ -271,7 +274,6 @@ void _dump_red_pkt(struct red_pkt *pkt, char *dir)
 	TRACE_PKT("   .mcast_id   = %08x\n", pkt->hdr.cookie.mcast_id);
 	TRACE_PKT("   .red_id     = %08x\n", pkt->hdr.cookie.red_id);
 	TRACE_PKT("   .magic      = %08x\n", pkt->hdr.cookie.magic);
-	TRACE_PKT("   .retry      = %08x\n", pkt->hdr.cookie.retry);
 	for (i = 0; i < 4; i++)
 		TRACE_PKT("  ival[%d]     = %016lx\n", i, data[i]);
 	TRACE_PKT("---------------\n");
@@ -535,6 +537,7 @@ static int _gen_tx_dfa(struct cxip_coll_reduction *reduction,
 		       int av_set_idx, union c_fab_addr *dfa,
 		       uint8_t *index_ext, bool *is_mcast)
 {
+	struct cxip_coll_mc *mc;
 	struct cxip_ep_obj *ep_obj;
 	struct cxip_av_set *av_set_obj;
 	struct cxip_addr dest_caddr;
@@ -543,15 +546,21 @@ static int _gen_tx_dfa(struct cxip_coll_reduction *reduction,
 	int idx_ext;
 	int ret;
 
-	ep_obj = reduction->mc_obj->ep_obj;
-	av_set_obj = reduction->mc_obj->av_set_obj;
+	/* cxi_build_mcast_dfa() found in:
+	    cassini-headers/src/csrdef/cassini_user_defs.h
+	    cassini-headers/include/cxi_prov_hw.h
+	*/
+	mc = reduction->mc_obj;
+	ep_obj = mc->ep_obj;
+	av_set_obj = mc->av_set_obj;
 
 	/* Send address */
 	switch (av_set_obj->comm_key.keytype) {
+	case COMM_KEY_NONE:
 	case COMM_KEY_MULTICAST:
 		/* - destination == multicast ID
 		 * - idx_ext == 0
-		 * - dfa == multicast destination
+		 * - dfa == multicast address
 		 * - index_ext == 0
 		 */
 		if (is_netsim(ep_obj)) {
@@ -559,16 +568,18 @@ static int _gen_tx_dfa(struct cxip_coll_reduction *reduction,
 			return -FI_EINVAL;
 		}
 		idx_ext = 0;
-		cxi_build_mcast_dfa(av_set_obj->comm_key.mcast.mcast_addr,
-				    reduction->red_id, idx_ext,
-				    dfa, index_ext);
+		cxi_build_mcast_dfa(mc->mcast_addr,	// mcast_id
+				    reduction->red_id,	// red_id
+				    idx_ext,		// idx_ext
+				    dfa,		// return dfa
+				    index_ext);		// return idx_ext
 		*is_mcast = true;
 		break;
 	case COMM_KEY_UNICAST:
 		/* - destination == remote node in av_set_obj
 		 * - idx_ext == CXIP_PTL_IDX_COLL
 		 * - dfa = remote nic
-		 * - index_ext == CXIP_PTL_IDX_COLL
+		 * - index_ext == idx_ext
 		 */
 		if (av_set_idx >= av_set_obj->fi_addr_cnt) {
 			CXIP_WARN("av_set_idx out-of-range\n");
@@ -578,9 +589,14 @@ static int _gen_tx_dfa(struct cxip_coll_reduction *reduction,
 		ret = cxip_av_lookup_addr(ep_obj->av, dest_addr, &dest_caddr);
 		if (ret != FI_SUCCESS)
 			return ret;
+		idx_ext = CXIP_PTL_IDX_COLL;
 		pid_bits = ep_obj->domain->iface->dev->info.pid_bits;
-		cxi_build_dfa(dest_caddr.nic, dest_caddr.pid, pid_bits,
-			      CXIP_PTL_IDX_COLL, dfa, index_ext);
+		cxi_build_dfa(dest_caddr.nic,		// dest NIC
+			      dest_caddr.pid,		// dest PID
+			      pid_bits,			// pid width
+			      idx_ext,			// idx_ext
+			      dfa,			// return dfa
+			      index_ext);		// return idx_ext
 		*is_mcast = false;
 		break;
 	case COMM_KEY_RANK:
@@ -596,8 +612,12 @@ static int _gen_tx_dfa(struct cxip_coll_reduction *reduction,
 		dest_caddr = ep_obj->src_addr;
 		pid_bits = ep_obj->domain->iface->dev->info.pid_bits;
 		idx_ext = CXIP_PTL_IDX_COLL + av_set_idx;
-		cxi_build_dfa(dest_caddr.nic, dest_caddr.pid, pid_bits,
-			      idx_ext, dfa, index_ext);
+		cxi_build_dfa(dest_caddr.nic,		// dest NIC
+			      dest_caddr.pid,		// dest PID
+			      pid_bits,			// pid width
+			      idx_ext,			// idx_ext
+			      dfa,			// return dfa
+			      index_ext);		// return idx_ext
 		*is_mcast = false;
 		break;
 	default:
@@ -668,8 +688,8 @@ int cxip_coll_send(struct cxip_coll_reduction *reduction,
 		cmd.full_dma.request_len = buflen;
 
 		/* this uses cached values, returns -FI_EAGAIN if queue full */
-		ret = cxip_txq_cp_set(cmdq, ep_obj->auth_key.vni,
-				      mc_obj->tc, mc_obj->tc_type);
+		ret = cxip_cmdq_cp_set(cmdq, ep_obj->auth_key.vni,
+				       mc_obj->tc, mc_obj->tc_type);
 		if (ret)
 			goto err;
 
@@ -686,8 +706,8 @@ int cxip_coll_send(struct cxip_coll_reduction *reduction,
 			ep_obj->src_addr.pid, ep_obj->src_addr.nic);
 
 		/* this uses cached values, returns -FI_EAGAIN if queue full */
-		ret = cxip_txq_cp_set(cmdq, ep_obj->auth_key.vni,
-				      mc_obj->tc, mc_obj->tc_type);
+		ret = cxip_cmdq_cp_set(cmdq, ep_obj->auth_key.vni,
+				       mc_obj->tc, mc_obj->tc_type);
 		if (ret)
 			goto err;
 
@@ -1637,7 +1657,7 @@ bool is_hw_root(struct cxip_coll_mc *mc_obj)
 
 /* Simulated unicast send of multiple packets as root node to leaf nodes */
 static inline
-ssize_t _send_pkt_as_root(struct cxip_coll_reduction *reduction, bool retry)
+ssize_t _send_pkt_as_root(struct cxip_coll_reduction *reduction)
 {
 	int i, ret, err;
 
@@ -1661,7 +1681,7 @@ ssize_t _send_pkt_as_root(struct cxip_coll_reduction *reduction, bool retry)
 
 /* Simulated unicast send of single packet as leaf node to root node */
 static inline
-ssize_t _send_pkt_as_leaf(struct cxip_coll_reduction *reduction, bool retry)
+ssize_t _send_pkt_as_leaf(struct cxip_coll_reduction *reduction)
 {
 	int ret;
 
@@ -1674,27 +1694,29 @@ ssize_t _send_pkt_as_leaf(struct cxip_coll_reduction *reduction, bool retry)
 
 /* Multicast send of single packet from root or leaf node */
 static inline
-ssize_t _send_pkt_mc(struct cxip_coll_reduction *reduction, bool retry)
+ssize_t _send_pkt_mc(struct cxip_coll_reduction *reduction)
 {
-	return cxip_coll_send(reduction, 0,
-			      reduction->tx_msg,
-			      sizeof(struct red_pkt),
-			      reduction->mc_obj->reduction_md);
+	int ret;
+
+	ret = cxip_coll_send(reduction, 0, reduction->tx_msg,
+			     sizeof(struct red_pkt),
+			     reduction->mc_obj->reduction_md);
+	TRACE_DEBUG("mcast: send=%d ret=%d\n", 1, ret);
+	return ret;
 }
 
 /* Send packet from root or leaf node as appropriate */
 static inline
-ssize_t _send_pkt(struct cxip_coll_reduction *reduction, bool retry)
+ssize_t _send_pkt(struct cxip_coll_reduction *reduction)
 {
 	int ret;
 
-	if (reduction->mc_obj->av_set_obj->comm_key.keytype ==
-	    COMM_KEY_MULTICAST) {
-		ret = _send_pkt_mc(reduction, retry);
+	if (reduction->mc_obj->is_multicast) {
+		ret = _send_pkt_mc(reduction);
 	} else if (is_hw_root(reduction->mc_obj)) {
-		ret = _send_pkt_as_root(reduction, retry);
+		ret = _send_pkt_as_root(reduction);
 	} else {
-		ret = _send_pkt_as_leaf(reduction, retry);
+		ret = _send_pkt_as_leaf(reduction);
 	}
 	return ret;
 }
@@ -1711,11 +1733,11 @@ int cxip_coll_send_red_pkt(struct cxip_coll_reduction *reduction,
 
 	memset(&pkt->hdr, 0, sizeof(pkt->hdr));
 	pkt->hdr.arm = arm;
+	pkt->hdr.retry = retry;
 	pkt->hdr.seqno = reduction->seqno;
 	pkt->hdr.resno = reduction->resno;
 	pkt->hdr.cookie.mcast_id = reduction->mc_obj->mcast_addr;
 	pkt->hdr.cookie.red_id = reduction->red_id;
-	pkt->hdr.cookie.retry = retry;
 	pkt->hdr.cookie.magic = MAGIC;
 
 	if (coll_data) {
@@ -1741,7 +1763,7 @@ int cxip_coll_send_red_pkt(struct cxip_coll_reduction *reduction,
 
 	/* -FI_EAGAIN means HW queue is full, should self-clear */
 	do {
-		ret = _send_pkt(reduction, retry);
+		ret = _send_pkt(reduction);
 	} while (ret == -FI_EAGAIN);
 	/* any other error is a serious config/hardware issue */
 	if (ret)
@@ -1897,6 +1919,8 @@ bool _is_red_timed_out(struct cxip_coll_reduction *reduction)
 {
 	struct timespec tsnow;
 
+	if (reduction->mc_obj->retry_disable)
+		return false;
 	if (_is_red_first_time(reduction)) {
 		TRACE_DEBUG("=== root first time, retry\n");
 		return true;
@@ -2020,7 +2044,7 @@ static void _progress_leaf(struct cxip_coll_reduction *reduction,
 		_tsset(reduction);
 		reduction->seqno = pkt->hdr.seqno;
 		reduction->resno = pkt->hdr.seqno;
-		if (pkt->hdr.cookie.retry)
+		if (pkt->hdr.retry)
 			reduction->pktsent = false;
 	}
 
@@ -2424,7 +2448,6 @@ struct cxip_join_state {
 	int mynode_idx;			// index within the fi_addr[] list
 	int mynode_fiaddr;		// fi_addr of this node
 	int simrank;			// simulated rank of NIC
-	int pid_idx;			// pid_idx used by ptl_te
 	int prov_errno;			// collective provider error
 	int sched_state;		// scheduled operation
 	int join_idx;			// unique join index for diagnostics
@@ -2493,7 +2516,8 @@ static void _close_pte(struct cxip_coll_pte *coll_pte)
 }
 
 /* pid_idx == CXIP_PTL_IDX_COLL+rank for NETSIM
- * pid_idx == CXIP_PTL_IDX_COLL for all other cases
+ * pid_idx == CXIP_PTL_IDX_COLL for UNICAST
+ * pid_idx == multicast for MULTICAST
  */
 static int _acquire_pte(struct cxip_ep_obj *ep_obj, int pid_idx,
 			 bool is_mcast, struct cxip_coll_pte **coll_pte_ret)
@@ -2596,24 +2620,42 @@ static struct fi_ops mc_ops = {
  * Utility routine to set up the collective framework in response to calls to
  * fi_join_collective().
  *
- * If jstate->is_rank is true, this is a NETSIM model, which opens a PTE for
- * each call to fi_join_collective() that is bound to the multicast object
- * created by that call. This allows simulated multicast traffic through the
- * NETSIM loopback port by using different pte_idx values for each PTE to
- * disambiguate traffic intended for different simulated hardware endpoints.
- * This model does not support multiple MC objects at an endpoint: there is
- * exactly one MC address. Progressing the single endpoint will progress all
- * of the simulated MC objects. Extending this model to support multiple MC
- * objects is not a priority at this time.
+ * This currently supports three different collectives transport models.
  *
- * If jstate->is_rank is false, this is a multinode model. The first call to
- * fi_join_collective() creates a single PTE which is bound to the EP, and
- * creates the first multicast object for that endpoint. Every subsequent
- * join will create an additional multicast object that shares the PTE for
- * that endpoint. Multiple NICs on the node are represented by separate EP
- * objects, which are functionally distinct: all endpoints must be progressed
- * independently, and if any endpoint is not progressed, it will stall the
- * collective.
+ * If jstate->is_rank is true, this is a NETSIM model. This is an early
+ * testing model, and is retained for regression testing of the code for code
+ * merge. The model requires a PTE for each simulated endpoint in the tree,
+ * since the endpoint can only send to itself: there is a single domain (and
+ * simulated NIC) under NETSIM. The pid_index is used to simulate multiple
+ * "multicast" target endpoints. Setup creates multiple PTEs, one for each
+ * simulated endpoint, each using a different pid_index. The NETSIM tests run
+ * in isolated test processes, so pid_index values should not conflict with
+ * other traffic.
+ *
+ * If jstate->is_rank is false, and jstate->is_mcast is also false, this is the
+ * UNICAST model. This is a test model developed to parallelize development
+ * during a period of time when fabric multicast was unavailable, to allow a
+ * full multi-node simulation of collectives, and may be deprecated as multicast
+ * capability matures. This model requires only a single PTE per domain (NIC).
+ * Sends are serialized through each endpoint, but receives can race and become
+ * disordered as they pass through the fabric, as will occur in production. The
+ * pid_index is set to the reserved value of CXIP_PTL_IDX_COLL, which should not
+ * be used by any other traffic on a given NIC, allowing this model to be used
+ * concurrently with other traffic.
+ *
+ * If jstate->is_rank is false and jstate->is_mcast is true, this is the
+ * production MULTICAST model. This supports multiple multicast trees, and
+ * requires a PTE for each tree, since the pid_index is used to encode the
+ * multicast address.
+ *
+ * Normal PTE setup populates the address portion of the PTE from the domains
+ * that have been defined, each domain representing a NIC, and the pid_index
+ * sets only the lower pid_width bits of the PTE address to differentiate
+ * different traffic streams. However, when a PTE is created with is_mcast=true,
+ * the driver code sets the entire PTE address. This calling code must encode
+ * the multicast address by bit-shifting it out of the pid_width range. The
+ * lower bits are arbitrary, since this PTE cannot receive any other traffic,
+ * and are set to zero.
  *
  * Caller must hold ep_obj->lock.
  */
@@ -2625,6 +2667,8 @@ static int _initialize_mc(void *ptr)
 	struct cxip_coll_mc *mc_obj;
 	struct cxip_coll_pte *coll_pte;
 	struct cxip_cmdq *cmdq;
+	union cxi_pte_map_offset pid_mcast;
+	int pid_idx;
 	int red_id;
 	int ret;
 
@@ -2634,24 +2678,32 @@ static int _initialize_mc(void *ptr)
 	if (!mc_obj)
 		return -FI_ENOMEM;
 
-	/* COMM_KEY_RANK model needs a distinct PTE for every MC object.
-	 * All other models share a single PTE for all MCs using an EP.
-	 */
-	coll_pte = ep_obj->coll.coll_pte;
-	if (!coll_pte) {
-		TRACE_DEBUG("acqiring PTE\n");
-		ret = _acquire_pte(ep_obj, jstate->pid_idx, jstate->is_mcast,
-				   &coll_pte);
-		if (ret) {
-			TRACE_DEBUG("acquiring PTE failed %d\n", ret);
-			free(mc_obj);
-			return ret;
-		}
-		if (!jstate->is_rank) {
-			TRACE_DEBUG("assigned PTE to ep_obj\n");
-			ep_obj->coll.coll_pte = coll_pte;
-		}
-		/* else leave ep_obj->coll.coll_pte == NULL */
+	TRACE_DEBUG("acquiring PTE\n");
+	if (jstate->is_rank) {
+		// NETSIM
+		// pid_idx = simulated collective rank
+		pid_idx = CXIP_PTL_IDX_COLL + jstate->simrank;
+		ret = _acquire_pte(ep_obj, pid_idx, false, &coll_pte);
+		// suppress attempt to set multiple times in idm
+		coll_pte->mc_obj = mc_obj;
+	} else if (!jstate->is_mcast) {
+		// UNICAST
+		// pid_idx = simulated collective tree
+		pid_idx = CXIP_PTL_IDX_COLL;
+		ret = _acquire_pte(ep_obj, pid_idx, false, &coll_pte);
+	} else {
+		// MULTICAST
+		// pid_idx = bit-shifted multicast address
+		memset(&pid_mcast, 0, sizeof(pid_mcast));
+		pid_mcast.mcast_id = jstate->bcast_data.mcast_addr;
+		pid_mcast.mcast_pte_index = 0;
+		pid_idx = *((int *)&pid_mcast);
+		ret = _acquire_pte(ep_obj, pid_idx, true, &coll_pte);
+	}
+	if (ret) {
+		TRACE_DEBUG("acquiring PTE failed %d\n", ret);
+		free(mc_obj);
+		return ret;
 	}
 	/* copy coll_pte to mc_obj */
 	mc_obj->coll_pte = coll_pte;
@@ -2666,6 +2718,17 @@ static int _initialize_mc(void *ptr)
 	/* link av_set_obj to mc_obj (one to one) */
 	av_set_obj->mc_obj = mc_obj;
 	mc_obj->av_set_obj = av_set_obj;
+
+	/* define whether this is multicast */
+	switch (av_set_obj->comm_key.keytype) {
+	case COMM_KEY_NONE:
+	case COMM_KEY_MULTICAST:
+		mc_obj->is_multicast = true;
+		break;
+	default:
+		mc_obj->is_multicast = false;
+		break;
+	}
 
 	/* initialize remainder of mc_obj */
 	mc_obj->mc_fid.fid.fclass = FI_CLASS_MC;
@@ -2714,7 +2777,6 @@ static int _initialize_mc(void *ptr)
 	}
 
 	/* define the traffic class */
-	// TODO revisit for LOW_LATENCY
 	if (is_netsim(ep_obj)) {
 		/* NETSIM RANK model */
 		mc_obj->tc = CXI_TC_BEST_EFFORT;
@@ -2725,7 +2787,7 @@ static int _initialize_mc(void *ptr)
 		mc_obj->tc_type = CXI_TC_TYPE_DEFAULT;
 	} else if (is_hw_root(mc_obj)) {
 		/* MULTICAST model, hw_root */
-		mc_obj->tc = CXI_TC_BEST_EFFORT;
+		mc_obj->tc = CXI_TC_LOW_LATENCY;
 		mc_obj->tc_type = CXI_TC_TYPE_DEFAULT;
 	} else {
 		/* MULTICAST model, leaves */
@@ -2734,8 +2796,8 @@ static int _initialize_mc(void *ptr)
 	}
 	/* Set this now to instantiate cmdq CP */
 	cmdq = ep_obj->coll.tx_cmdq;
-	ret = cxip_txq_cp_set(cmdq, ep_obj->auth_key.vni,
-			      mc_obj->tc, mc_obj->tc_type);
+	ret = cxip_cmdq_cp_set(cmdq, ep_obj->auth_key.vni,
+			       mc_obj->tc, mc_obj->tc_type);
 	if (ret) {
 		TRACE_JOIN("%s: cxip_txq_cp_set() = %d\n", __func__, ret);
 		goto fail;
@@ -2794,18 +2856,18 @@ static void _cxip_create_mcast_cb(struct cxip_curl_handle *handle)
 	struct cxip_addr caddr;
 	const char *hwrootstr;
 	int mcaddr, hwroot;
-	uint32_t b2, b1, b0, n;
+	uint32_t octet[6], n;
 	int i, ret;
 
 	/* Creation process is done */
-	TRACE_JOIN("CURL COMPLETED!\n");
+	TRACE_CURL("CURL COMPLETED!\n");
 	jstate->finished_mcast = true;
 
 	switch (handle->status) {
 	case 200:
 	case 201:
 		/* CURL succeeded, parse response */
-		TRACE_JOIN("CURL PARSE RESPONSE:\n%s\n", handle->response);
+		TRACE_CURL("CURL PARSE RESPONSE:\n%s\n", handle->response);
 		if (!(json_obj = json_tokener_parse(handle->response)))
 			break;
 		if (cxip_json_int("mcastID", json_obj, &mcaddr))
@@ -2813,12 +2875,19 @@ static void _cxip_create_mcast_cb(struct cxip_curl_handle *handle)
 		if (cxip_json_string("hwRoot", json_obj, &hwrootstr))
 			break;
 
-		n = sscanf(hwrootstr, "%x:%x:%x", &b2, &b1, &b0);
-		if (n < 3 || b2 > 0xf || b1 > 0xff || b2 > 0xff)
+		memset(octet, 0, sizeof(octet));
+		hwroot = 0;
+		n = sscanf(hwrootstr, "%x:%x:%x:%x:%x:%x",
+			   &octet[5], &octet[4], &octet[3],
+			   &octet[2], &octet[1], &octet[0]);
+		if (n < 3) {
+			TRACE_CURL("bad hwroot address = %s\n", hwrootstr);
 			break;
-		hwroot = (b2 << 16) + (b1 << 8) + b0;
+		}
+		for (i = 0; i < n; i++)
+			hwroot |= octet[i] << (8*i);
 
-		TRACE_JOIN("mcastID=%d hwRoot='%s'=%x\n", mcaddr, hwrootstr,
+		TRACE_CURL("mcastID=%d hwRoot='%s'=%x\n", mcaddr, hwrootstr,
 			   hwroot);
 		for (i = 0; i < jstate->av_set_obj->fi_addr_cnt; i++) {
 			ret = cxip_av_lookup_addr(
@@ -2831,9 +2900,9 @@ static void _cxip_create_mcast_cb(struct cxip_curl_handle *handle)
 			if (hwroot == caddr.nic)
 				break;
 		}
-		TRACE_JOIN("final index=%d\n", i);
+		TRACE_CURL("final index=%d\n", i);
 		if (i >= jstate->av_set_obj->fi_addr_cnt) {
-			TRACE_JOIN("multicast HWroot not found in av_set\n");
+			TRACE_CURL("multicast HWroot not found in av_set\n");
 			jstate->prov_errno = CXIP_PROV_ERRNO_HWROOT_INVALID;
 			break;
 		}
@@ -2843,21 +2912,21 @@ static void _cxip_create_mcast_cb(struct cxip_curl_handle *handle)
 		jstate->bcast_data.mcast_addr = (uint32_t)mcaddr;
 		jstate->is_mcast = true;
 		/* This succeeded */
-		TRACE_JOIN("curl: mcaddr   =%08x\n",
+		TRACE_CURL("curl: mcaddr   =%08x\n",
 			   jstate->bcast_data.mcast_addr);
-		TRACE_JOIN("curl: hwrootidx=%d\n",
+		TRACE_CURL("curl: hwrootidx=%d\n",
 			   jstate->bcast_data.hwroot_idx);
 		break;
 	default:
-		TRACE_JOIN("ERRMSK SET CURL error %ld!\n", handle->status);
+		TRACE_CURL("ERRMSK SET CURL error %ld!\n", handle->status);
 		if (handle->response)
-			TRACE_JOIN("ERROR RESPONSE:\n%s\n", handle->response);
+			TRACE_CURL("ERROR RESPONSE:\n%s\n", handle->response);
 		// TODO finer error differentiation from CURL errors
 		jstate->prov_errno = CXIP_PROV_ERRNO_CURL;
 		break;
 	}
 	free(curl_usrptr);
-	TRACE_JOIN("CURL COMPLETED!\n");
+	TRACE_CURL("CURL COMPLETED!\n");
 	jstate->finished_mcast = true;
 }
 
@@ -2868,8 +2937,6 @@ static void _start_curl(void *ptr)
 {
 	struct cxip_curl_mcast_usrptr *curl_usrptr;
 	struct cxip_join_state *jstate = ptr;
-	static const char *json_fmt =
-		"{'macs':[%s],'jobID':'%s','jobStepID':'%s','timeout':%ld}";
 	struct cxip_addr caddr;
 	char *jsonreq, *mac, *url, *p;
 	int i, ret;
@@ -2881,14 +2948,14 @@ static void _start_curl(void *ptr)
 	url = NULL;
 
 	/* acquire the environment variables needed */
-	TRACE_JOIN("jobid   = %s\n", cxip_env.coll_job_id);
-	TRACE_JOIN("stepid  = %s\n", cxip_env.coll_job_step_id);
-	TRACE_JOIN("fmurl   = %s\n", cxip_env.coll_fabric_mgr_url);
-	TRACE_JOIN("token   = %s\n", cxip_env.coll_mcast_token);
-	TRACE_JOIN("maxadrs = %ld\n", cxip_env.hwcoll_addrs_per_job);
-	TRACE_JOIN("minnodes= %ld\n", cxip_env.hwcoll_min_nodes);
-	TRACE_JOIN("retry   = %ld\n", cxip_env.coll_retry_usec);
-	TRACE_JOIN("tmout   = %ld\n", cxip_env.coll_timeout_usec);
+	TRACE_CURL("jobid   = %s\n", cxip_env.coll_job_id);
+	TRACE_CURL("stepid  = %s\n", cxip_env.coll_job_step_id);
+	TRACE_CURL("fmurl   = %s\n", cxip_env.coll_fabric_mgr_url);
+	TRACE_CURL("token   = %s\n", cxip_env.coll_mcast_token);
+	TRACE_CURL("maxadrs = %ld\n", cxip_env.hwcoll_addrs_per_job);
+	TRACE_CURL("minnodes= %ld\n", cxip_env.hwcoll_min_nodes);
+	TRACE_CURL("retry   = %ld\n", cxip_env.coll_retry_usec);
+	TRACE_CURL("tmout   = %ld\n", cxip_env.coll_timeout_usec);
 
 	/* Generic error for any preliminary failures */
 	jstate->prov_errno = CXIP_PROV_ERRNO_CURL;
@@ -2900,8 +2967,7 @@ static void _start_curl(void *ptr)
 		goto quit;
 	}
 
-	ret = asprintf(&url, "%s/fabric/collectives/multicast",
-		       cxip_env.coll_fabric_mgr_url);
+	ret = asprintf(&url, "%s", cxip_env.coll_fabric_mgr_url);
 	if (ret < 0) {
 		TRACE_JOIN("Failed to construct CURL address\n");
 		ret = -FI_ENOMEM;
@@ -2933,10 +2999,14 @@ static void _start_curl(void *ptr)
 	*(--p) = 0;
 
 	/* generate the CURL JSON request */
-	ret = asprintf(&jsonreq, json_fmt, mac,
+	ret = asprintf(&jsonreq,
+			"{'macs':[%s],'vni': %d,'timeout':%ld,'jobID':'%s',"
+			"'jobStepID':'%s'}",
+			mac,
+			jstate->ep_obj->auth_key.vni,
+			cxip_env.coll_timeout_usec,
 			cxip_env.coll_job_id,
-			cxip_env.coll_job_step_id,
-			cxip_env.coll_timeout_usec);
+			cxip_env.coll_job_step_id);
 	if (ret < 0) {
 		TRACE_JOIN("Creating JSON request = %d\n", ret);
 		ret = -FI_ENOMEM;
@@ -3020,6 +3090,9 @@ quit:
  * If the return code is anything else, the join operation fails.
  */
 
+/* suppress repeated BUSY log messages */
+static long suppress_busy_log;
+
 /* append a jstate to the zbcoll scheduler */
 static void _append_sched(struct cxip_zbcoll_obj *zb, void *usrptr)
 {
@@ -3070,23 +3143,29 @@ static void _start_bcast(void *ptr)
 	struct cxip_join_state *jstate = ptr;
 	struct cxip_zbcoll_obj *zb = jstate->zb;
 
-	TRACE_JOIN("%s: entry\n", __func__);
+	if (!suppress_busy_log)
+		TRACE_JOIN("%s: entry\n", __func__);
 
 	/* error will indicate that the multicast request fails */
 	jstate->prov_errno = C_RC_INVALID_DFA_FORMAT;
 	/* rank 0 always does the work here */
 	if (jstate->mynode_idx == 0) {
+		if (!suppress_busy_log)
+			TRACE_JOIN("%s: rank 0\n", __func__);
 		if (jstate->create_mcast) {
 			/* first call (only) initiates CURL request */
 			if (!jstate->creating_mcast) {
+				TRACE_JOIN("%s create mcast\n", __func__);
 				jstate->creating_mcast = true;
 				_start_curl(jstate);
 			}
 			/* every retry call checks to see if CURL is complete */
 			if (!jstate->finished_mcast) {
 				zb->error = -FI_EAGAIN;
+				suppress_busy_log++;
 				goto quit;
 			}
+			suppress_busy_log = 0;
 			/* bcast_data.valid is set by curl callback */
 		} else {
 			/* static bcast data is presumed correct */
@@ -3294,10 +3373,6 @@ static void _progress_sched(struct cxip_join_state *jstate)
 	struct cxip_zbcoll_obj *zb = jstate->zb;
 	enum state_code *codes;
 
-	TRACE_JOIN("entry jstate[%d,%d]=%s, error=%d\n",
-		   jstate->join_idx, jstate->mynode_idx,
-		   state_name[jstate->sched_state], zb->error);
-
 	/* acquire the success/again/fail state codes for current state */
 	codes = progress_state[jstate->sched_state];
 	switch (zb->error) {
@@ -3305,12 +3380,15 @@ static void _progress_sched(struct cxip_join_state *jstate)
 		/* last operation succeeded */
 		TRACE_JOIN("%s: success\n", __func__);
 		jstate->sched_state = codes[0];
+		suppress_busy_log = 0;
 		break;
 	case -FI_EBUSY:
 	case -FI_EAGAIN:
 		/* last operation needs a retry */
-		TRACE_JOIN("%s: busy retry\n", __func__);
+		if (!suppress_busy_log)
+			TRACE_JOIN("%s: busy retry\n", __func__);
 		jstate->sched_state = codes[1];
+		suppress_busy_log++;
 		break;
 	default:
 		/* last operation failed */
@@ -3318,9 +3396,10 @@ static void _progress_sched(struct cxip_join_state *jstate)
 		jstate->sched_state = codes[2];
 		break;
 	}
-	TRACE_JOIN("----> jstate[%d,%d]=%s\n",
-		   jstate->join_idx, jstate->mynode_idx,
-		   state_name[jstate->sched_state]);
+	if (!suppress_busy_log)
+		TRACE_JOIN("----> jstate[%d,%d]=%s\n",
+			jstate->join_idx, jstate->mynode_idx,
+			state_name[jstate->sched_state]);
 
 	/* execute the new state function */
 	state_func[jstate->sched_state](jstate);
@@ -3504,7 +3583,6 @@ int cxip_join_collective(struct fid_ep *ep, fi_addr_t coll_addr,
 		jstate->mynode_fiaddr =
 			av_set_obj->fi_addr_ary[jstate->mynode_idx];
 		jstate->simrank = ZB_NOSIM;
-		jstate->pid_idx = CXIP_PTL_IDX_COLL;
 		jstate->bcast_data.hwroot_idx = 0;
 		jstate->bcast_data.mcast_addr = 0;
 		jstate->bcast_data.valid = false;
@@ -3526,7 +3604,6 @@ int cxip_join_collective(struct fid_ep *ep, fi_addr_t coll_addr,
 		jstate->mynode_fiaddr =
 			av_set_obj->fi_addr_ary[jstate->mynode_idx];
 		jstate->simrank = ZB_NOSIM;
-		jstate->pid_idx = CXIP_PTL_IDX_COLL;
 		jstate->bcast_data.hwroot_idx =
 			av_set_obj->comm_key.mcast.hwroot_idx;
 		jstate->bcast_data.mcast_addr =
@@ -3550,7 +3627,6 @@ int cxip_join_collective(struct fid_ep *ep, fi_addr_t coll_addr,
 		jstate->mynode_fiaddr =
 			av_set_obj->fi_addr_ary[jstate->mynode_idx];
 		jstate->simrank = ZB_NOSIM;
-		jstate->pid_idx = CXIP_PTL_IDX_COLL;
 		jstate->bcast_data.hwroot_idx =
 			av_set_obj->comm_key.ucast.hwroot_idx;
 		jstate->bcast_data.mcast_addr =
@@ -3568,7 +3644,6 @@ int cxip_join_collective(struct fid_ep *ep, fi_addr_t coll_addr,
 		jstate->mynode_idx = av_set_obj->comm_key.rank.rank;
 		jstate->mynode_fiaddr = (fi_addr_t)jstate->mynode_idx;
 		jstate->simrank = jstate->mynode_idx;
-		jstate->pid_idx = CXIP_PTL_IDX_COLL + jstate->simrank;
 		jstate->bcast_data.hwroot_idx = 0;
 		jstate->bcast_data.mcast_addr = ep_obj->src_addr.nic;
 		jstate->bcast_data.valid = true;
@@ -3764,8 +3839,8 @@ int cxip_coll_enable(struct cxip_ep *ep)
 	}
 
 	/* A read-only or write-only endpoint is legal */
-	if (!(ofi_recv_allowed(ep_obj->rxc.attr.caps) &&
-	      ofi_send_allowed(ep_obj->txc.attr.caps))) {
+	if (!(ofi_recv_allowed(ep_obj->rxc->attr.caps) &&
+	      ofi_send_allowed(ep_obj->txc->attr.caps))) {
 		CXIP_INFO("EP not recv/send, collectives not enabled\n");
 		return FI_SUCCESS;
 	}
@@ -3781,17 +3856,18 @@ int cxip_coll_enable(struct cxip_ep *ep)
 		return -FI_EINVAL;
 
 	/* Bind all STD EP objects to the coll object */
-	ep_obj->coll.rx_cmdq = ep_obj->rxc.rx_cmdq;
-	ep_obj->coll.tx_cmdq = ep_obj->txc.tx_cmdq;
-	ep_obj->coll.rx_cntr = ep_obj->rxc.recv_cntr;
-	ep_obj->coll.tx_cntr = ep_obj->txc.send_cntr;
-	ep_obj->coll.rx_evtq = &ep_obj->rxc.rx_evtq;
-	ep_obj->coll.tx_evtq = &ep_obj->txc.tx_evtq;
+	ep_obj->coll.rx_cmdq = ep_obj->rxc->rx_cmdq;
+	ep_obj->coll.tx_cmdq = ep_obj->txc->tx_cmdq;
+	ep_obj->coll.rx_cntr = ep_obj->rxc->recv_cntr;
+	ep_obj->coll.tx_cntr = ep_obj->txc->send_cntr;
+	ep_obj->coll.rx_evtq = &ep_obj->rxc->rx_evtq;
+	ep_obj->coll.tx_evtq = &ep_obj->txc->tx_evtq;
 	ep_obj->coll.eq = ep_obj->eq;
 
 	ep->ep.collective = &cxip_collective_ops;
 	ep_obj->coll.enabled = true;
 
+	cxip_coll_trace_init();
 	return FI_SUCCESS;
 }
 
@@ -3801,6 +3877,7 @@ int cxip_coll_disable(struct cxip_ep_obj *ep_obj)
 	if (!ep_obj->coll.enabled)
 		return FI_SUCCESS;
 
+	cxip_coll_trace_close();
 	ep_obj->coll.enabled = false;
 	ep_obj->coll.rx_cmdq = NULL;
 	ep_obj->coll.tx_cmdq = NULL;

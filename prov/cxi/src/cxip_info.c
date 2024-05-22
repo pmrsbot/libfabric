@@ -478,7 +478,7 @@ static int cxip_info_init(void)
 		for (ndx = 0; ndx < ARRAY_SIZE(cxip_infos); ndx++) {
 			ret = cxip_info_alloc(nic_if, ndx, &fi);
 			if (ret == -FI_ENODATA)
-				continue;;
+				continue;
 			if (ret != FI_SUCCESS) {
 				cxip_put_if(nic_if);
 				goto free_info;
@@ -489,6 +489,40 @@ static int cxip_info_init(void)
 			*fi_list = fi;
 			fi_list = &(fi->next);
 		}
+
+		/* Initialize the RNR protocol equivalents here, just
+		 * modifying the default entries to be suitable for
+		 * RNR. NOTE: FI_PROTO_CXI_RNR protocol does not exist
+		 * when only old compatibility constants are used.
+		 */
+		for (ndx = 0; ndx < ARRAY_SIZE(cxip_infos); ndx++) {
+			ret = cxip_info_alloc(nic_if, ndx, &fi);
+			if (ret == -FI_ENODATA)
+				continue;
+			if (ret != FI_SUCCESS) {
+				cxip_put_if(nic_if);
+				goto free_info;
+			}
+
+			fi->caps |= FI_DIRECTED_RECV;
+			fi->ep_attr->protocol = FI_PROTO_CXI_RNR;
+			fi->ep_attr->mem_tag_format = FI_TAG_GENERIC >>
+					(64 - CXIP_CS_TAG_WIDTH);
+			fi->tx_attr->msg_order = CXIP_MSG_ORDER & ~FI_ORDER_SAS;
+			fi->tx_attr->caps |= FI_DIRECTED_RECV;
+			/* Support IDC but not FI_INJECT */
+			fi->tx_attr->inject_size = 0;
+			fi->rx_attr->msg_order = CXIP_MSG_ORDER & ~FI_ORDER_SAS;
+			fi->rx_attr->caps |= FI_DIRECTED_RECV;
+			fi->rx_attr->total_buffered_recv = 0;
+
+			CXIP_DBG("%s RNR info created\n",
+				 nic_if->info->device_name);
+			*fi_list = fi;
+			fi_list = &(fi->next);
+		}
+
+		cxip_put_if(nic_if);
 	}
 
 	return FI_SUCCESS;
@@ -578,6 +612,8 @@ struct cxip_environment cxip_env = {
 	.force_odp = false,
 	.ats = false,
 	.iotlb = true,
+	.disable_dmabuf_cuda = false,
+	.disable_dmabuf_rocr = false,
 	.ats_mlock_mode = CXIP_ATS_MLOCK_ALL,
 	.fork_safe_requested = false,
 	.rx_match_mode = CXIP_PTLTE_DEFAULT_MODE,
@@ -585,6 +621,7 @@ struct cxip_environment cxip_env = {
 	.rdzv_get_min = 2049, /* Avoid single packet Gets */
 	.rdzv_eager_size = CXIP_RDZV_THRESHOLD,
 	.rdzv_aligned_sw_rget = 1,
+	.rnr_max_timeout_us = CXIP_RNR_TIMEOUT_US,
 	.disable_non_inject_msg_idc = 0,
 	.disable_host_register = 0,
 	.oflow_buf_size = CXIP_OFLOW_BUF_SIZE,
@@ -602,6 +639,7 @@ struct cxip_environment cxip_env = {
 	.req_buf_min_posted = CXIP_REQ_BUF_MIN_POSTED,
 	.req_buf_max_cached = CXIP_REQ_BUF_MAX_CACHED,
 	.msg_offload = 1,
+	.trunc_ok = false,
 	.msg_lossless = 0,
 	.sw_rx_tx_init_max = CXIP_SW_RX_TX_INIT_MAX_DEFAULT,
 	.hybrid_preemptive = 0,
@@ -671,6 +709,17 @@ static void cxip_env_init(void)
 	fi_param_get_bool(&cxip_prov, "rdzv_aligned_sw_rget",
 			  &cxip_env.rdzv_aligned_sw_rget);
 
+	fi_param_define(&cxip_prov, "rnr_max_timeout_us", FI_PARAM_INT,
+			"Maximum RNR time micro-seconds (default: %d).",
+			cxip_env.rnr_max_timeout_us);
+	fi_param_get_int(&cxip_prov, "rnr_max_timeout_us",
+			 &cxip_env.rnr_max_timeout_us);
+	if (cxip_env.rnr_max_timeout_us < 0) {
+		cxip_env.rnr_max_timeout_us = CXIP_RNR_TIMEOUT_US;
+		CXIP_INFO("Invalid RNR timeout, using (%d us)\n",
+			  cxip_env.rnr_max_timeout_us);
+	}
+
 	fi_param_define(&cxip_prov, "enable_trig_op_limit", FI_PARAM_BOOL,
 			"Enable enforcement of triggered operation limit. "
 			"Doing this can result in degrade "
@@ -719,6 +768,18 @@ static void cxip_env_init(void)
 	fi_param_define(&cxip_prov, "iotlb", FI_PARAM_BOOL,
 			"Enables the NIC IOTLB (default %d).", cxip_env.iotlb);
 	fi_param_get_bool(&cxip_prov, "iotlb", &cxip_env.iotlb);
+
+	fi_param_define(&cxip_prov, "disable_dmabuf_cuda", FI_PARAM_BOOL,
+			"Disables the DMABUF interface for CUDA (default %d).",
+			cxip_env.disable_dmabuf_cuda);
+	fi_param_get_bool(&cxip_prov, "disable_dmabuf_cuda",
+			  &cxip_env.disable_dmabuf_cuda);
+
+	fi_param_define(&cxip_prov, "disable_dmabuf_rocr", FI_PARAM_BOOL,
+			"Disables the DMABUF interface for ROCR (default %d).",
+			cxip_env.disable_dmabuf_rocr);
+	fi_param_get_bool(&cxip_prov, "disable_dmabuf_rocr",
+			  &cxip_env.disable_dmabuf_rocr);
 
 	fi_param_define(&cxip_prov, "ats_mlock_mode", FI_PARAM_STRING,
 			"Sets ATS mlock mode (off | all).");
@@ -1238,6 +1299,11 @@ static void cxip_env_init(void)
 		param_str = NULL;
 	}
 
+	fi_param_define(&cxip_prov, "trunc_ok", FI_PARAM_BOOL,
+			"Enables experimental truncation as a success (%d).",
+			cxip_env.trunc_ok);
+	fi_param_get_bool(&cxip_prov, "trunc_ok", &cxip_env.trunc_ok);
+
 	fi_param_define(&cxip_prov, "rdzv_proto", FI_PARAM_STRING,
 			"Sets preferred rendezvous protocol [default | alt_read] (default %s).",
 			cxip_rdzv_proto_to_str(cxip_env.rdzv_proto));
@@ -1553,6 +1619,7 @@ cxip_getinfo(uint32_t version, const char *node, const char *service,
 	struct cxip_if *iface;
 	bool copy_dest = NULL;
 	struct fi_info *temp_hints = NULL;
+	uint32_t proto;
 
 	if (flags & FI_SOURCE) {
 		if (!node && !service) {
@@ -1621,9 +1688,9 @@ cxip_getinfo(uint32_t version, const char *node, const char *service,
 	if (ret)
 		return ret;
 
-	/* Remove any info that did match based on mr_mode requirements.
-	 * Note that mr_mode FI_MR_ENDPOINT is only required if target
-	 * RMA/ATOMIC access is required.
+	/* Remove any info that did not match based on EP protocol or mr_mode
+	 * requirements. Note that mr_mode FI_MR_ENDPOINT is only required
+	 * if target RMA/ATOMIC access is required.
 	 */
 	if (hints) {
 		fi_ptr = *info;
@@ -1631,8 +1698,20 @@ cxip_getinfo(uint32_t version, const char *node, const char *service,
 		fi_prev_ptr = NULL;
 
 		while (fi_ptr) {
-			if (fi_ptr->caps & (FI_ATOMIC | FI_RMA) &&
-			    !fi_ptr->domain_attr->mr_mode) {
+			/* If hints protocol is not specified, default to use
+			 * protocol FI_PROTO_CXI. This
+			 * requires that FI_PROTO_CXI_RNR be explicitly
+			 * requested if hints are passed to be used.
+			 */
+			if (!hints->ep_attr->protocol) {
+				proto = FI_PROTO_CXI;
+			} else {
+				proto = hints->ep_attr->protocol;
+			}
+
+			if ((fi_ptr->caps & (FI_ATOMIC | FI_RMA) &&
+			     !fi_ptr->domain_attr->mr_mode) ||
+			    proto != fi_ptr->ep_attr->protocol) {
 				/* discard entry */
 				if (fi_prev_ptr)
 					fi_prev_ptr->next = fi_ptr->next;

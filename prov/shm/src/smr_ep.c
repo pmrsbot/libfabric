@@ -811,6 +811,21 @@ static void smr_cleanup_epoll(struct smr_sock_info *sock_info)
 	ofi_epoll_close(sock_info->epollfd);
 }
 
+static void smr_free_sock_info(struct smr_ep *ep)
+{
+	int i, j;
+
+	for (i = 0; i < SMR_MAX_PEERS; i++) {
+		if (!ep->sock_info->peers[i].device_fds)
+			continue;
+		for (j = 0; j < ep->sock_info->nfds; j++)
+			close(ep->sock_info->peers[i].device_fds[j]);
+		free(ep->sock_info->peers[i].device_fds);
+	}
+	free(ep->sock_info);
+	ep->sock_info = NULL;
+}
+
 static int smr_ep_close(struct fid *fid)
 {
 	struct smr_ep *ep;
@@ -826,11 +841,16 @@ static int smr_ep_close(struct fid *fid)
 		close(ep->sock_info->listen_sock);
 		unlink(ep->sock_info->name);
 		smr_cleanup_epoll(ep->sock_info);
-		free(ep->sock_info);
+		smr_free_sock_info(ep);
 	}
 
-	if (ep->srx && ep->util_ep.ep_fid.msg != &smr_no_recv_msg_ops)
-		(void) util_srx_close(&ep->srx->fid);
+	if (ep->srx) {
+		/* shm is an owner provider */
+		if (ep->util_ep.ep_fid.msg != &smr_no_recv_msg_ops)
+			(void) util_srx_close(&ep->srx->fid);
+		else /* shm is a peer provider */
+			free(ep->srx);
+	}
 
 	ofi_endpoint_close(&ep->util_ep);
 
@@ -1169,19 +1189,6 @@ out:
 		SMR_CMAP_FAILED : SMR_CMAP_SUCCESS;
 }
 
-static void smr_free_sock_info(struct smr_ep *ep)
-{
-	int i, j;
-
-	for (i = 0; i < SMR_MAX_PEERS; i++) {
-		for (j = 0; j < ep->sock_info->nfds; j++)
-			close(ep->sock_info->peers[i].device_fds[j]);
-		free(ep->sock_info->peers[i].device_fds);
-	}
-	free(ep->sock_info);
-	ep->sock_info = NULL;
-}
-
 static void smr_init_ipc_socket(struct smr_ep *ep)
 {
 	struct smr_sock_name *sock_name;
@@ -1259,6 +1266,15 @@ err_out:
 static int smr_discard(struct fi_peer_rx_entry *rx_entry)
 {
 	struct smr_cmd_ctx *cmd_ctx = rx_entry->peer_context;
+	struct smr_region *peer_smr;
+	struct smr_resp *resp;
+
+	if (cmd_ctx->cmd.msg.hdr.src_data >= smr_src_iov) {
+		peer_smr = smr_peer_region(cmd_ctx->ep->region,
+					   cmd_ctx->cmd.msg.hdr.id);
+		resp = smr_get_ptr(peer_smr, cmd_ctx->cmd.msg.hdr.src_data);
+		resp->status = SMR_STATUS_SUCCESS;
+	}
 
 	ofi_buf_free(cmd_ctx);
 
@@ -1348,7 +1364,6 @@ static int smr_ep_ctrl(struct fid *fid, int command, void *arg)
 	struct smr_domain *domain;
 	struct smr_ep *ep;
 	struct smr_av *av;
-	struct fid_peer_srx *srx;
 	int ret;
 
 	ep = container_of(fid, struct smr_ep, util_ep.ep_fid.fid);
@@ -1405,12 +1420,6 @@ static int smr_ep_ctrl(struct fid *fid, int command, void *arg)
 			if (ret)
 				return ret;
 		} else {
-			srx = calloc(1, sizeof(*srx));
-			srx->peer_ops = &smr_srx_peer_ops;
-			srx->owner_ops = smr_get_peer_srx(ep)->owner_ops;
-			srx->ep_fid.fid.context =
-				smr_get_peer_srx(ep)->ep_fid.fid.context;
-			ep->srx = &srx->ep_fid;
 			ep->util_ep.ep_fid.msg = &smr_no_recv_msg_ops;
 			ep->util_ep.ep_fid.tagged = &smr_no_recv_tag_ops;
 		}

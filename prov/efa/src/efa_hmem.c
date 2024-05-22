@@ -1,34 +1,5 @@
-/*
- * Copyright (c) 2022 Amazon.com, Inc. or its affiliates. All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * OpenIB.org BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: Copyright Amazon.com, Inc. or its affiliates. All rights reserved. */
 
 #include "efa.h"
 #include "efa_hmem.h"
@@ -91,8 +62,8 @@ static int efa_domain_hmem_info_init_protocol_thresholds(struct efa_domain *efa_
 	case FI_HMEM_NEURON:
 		info->runt_size = EFA_NEURON_RUNT_SIZE;
 		info->max_intra_eager_size = 0;
-		info->max_medium_msg_size = EFA_NEURON_INTER_MAX_MEDIUM_MESSAGE_SIZE;
-		info->min_read_msg_size = EFA_NEURON_INTER_MIN_READ_MESSAGE_SIZE;
+		info->max_medium_msg_size = 0;
+		info->min_read_msg_size = efa_max_eager_msg_size_with_largest_header(efa_domain) + 1;
 		info->min_read_write_size = efa_max_eager_msg_size_with_largest_header(efa_domain) + 1;
 		fi_param_get_size_t(&efa_prov, "runt_size", &info->runt_size);
 		fi_param_get_size_t(&efa_prov, "inter_min_read_message_size", &info->min_read_msg_size);

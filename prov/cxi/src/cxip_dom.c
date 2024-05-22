@@ -20,6 +20,309 @@
 
 extern struct fi_ops_mr cxip_dom_mr_ops;
 
+static void cxip_domain_cmdq_free(struct cxip_domain *dom)
+{
+	struct cxip_domain_cmdq *cmdq;
+
+	while ((cmdq = dlist_first_entry_or_null(&dom->cmdq_list,
+						 struct cxip_domain_cmdq,
+						 entry))) {
+
+		cxip_cmdq_free(cmdq->cmdq);
+		dlist_remove(&cmdq->entry);
+		dom->cmdq_cnt--;
+		free(cmdq);
+	}
+}
+
+static int cxip_domain_cmdq_alloc(struct cxip_domain *dom,
+				  uint16_t vni,
+				  enum cxi_traffic_class tc,
+				  struct cxip_domain_cmdq **dom_cmdq)
+{
+	struct cxip_domain_cmdq *cmdq;
+	struct cxi_cq_alloc_opts cq_opts = {
+		.flags = CXI_CQ_IS_TX,
+	};
+	int ret;
+
+	cmdq = calloc(1, sizeof(*cmdq));
+	if (!cmdq) {
+		CXIP_WARN("Failed to allocate cmdq memory\n");
+		return -FI_ENOMEM;
+	}
+
+	/* Domain managed transmit command queues require being updated on
+	 * empty to be able to safely change communication profile VNI.
+	 */
+	cq_opts.policy = CXI_CQ_UPDATE_HIGH_FREQ_EMPTY;
+
+	/* An IDC command can use up to 4x 64 byte slots. */
+	cq_opts.count = 4 * dom->tx_size;
+
+	ret = cxip_cmdq_alloc(dom->lni, NULL, &cq_opts, vni, tc,
+			      CXI_TC_TYPE_DEFAULT, &cmdq->cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to allocate cmdq: %d\n", ret);
+		goto err_free_mem;
+	}
+
+	dlist_insert_head(&cmdq->entry, &dom->cmdq_list);
+	dom->cmdq_cnt++;
+
+	*dom_cmdq = cmdq;
+
+	return FI_SUCCESS;
+
+err_free_mem:
+	free(cmdq);
+
+	return ret;
+}
+
+/* Hardware only allows for 16 different command profiles per RGID. Since each
+ * domain maps to a single RGID, this means effectively limits the number of
+ * TX command queue per domain to be 16. Since one TX command queue is
+ * reserved for triggered commands, real number is 15.
+ */
+#define MAX_DOM_TX_CMDQ 15U
+
+static int cxip_domain_find_cmdq(struct cxip_domain *dom,
+				 uint16_t vni,
+				 enum cxi_traffic_class tc,
+				 struct cxip_domain_cmdq **dom_cmdq)
+{
+	struct cxip_domain_cmdq *cmdq;
+	int ret;
+
+	/* Prefer existing command queues. */
+	dlist_foreach_container(&dom->cmdq_list, struct cxip_domain_cmdq, cmdq,
+				entry) {
+		if (cxip_cmdq_match(cmdq->cmdq, vni, tc,
+				    CXI_TC_TYPE_DEFAULT)) {
+			*dom_cmdq = cmdq;
+			return FI_SUCCESS;
+		}
+	}
+
+	/* Prefer reusing an empty command queue instead of allocating a new
+	 * one.
+	 */
+	dlist_foreach_container(&dom->cmdq_list, struct cxip_domain_cmdq, cmdq,
+				entry) {
+		if (cxip_cmdq_empty(cmdq->cmdq)) {
+
+			/* TODO: This needs to use new direct CP profile feature
+			 * which disables sharing of communication profile
+			 * across TX command queues.
+			 */
+			ret = cxip_cmdq_cp_set(cmdq->cmdq, vni, tc,
+					       CXI_TC_TYPE_DEFAULT);
+			if (ret) {
+				CXIP_WARN("Failed to change communication profile: %d\n",
+					  ret);
+				return ret;
+			}
+
+			*dom_cmdq = cmdq;
+			return FI_SUCCESS;
+		}
+	}
+
+	/* Last resort is allocating a new transmit command queue. If limit has
+	 * been reached, only option is to change communication profile for
+	 * existing TX cmdq.
+	 */
+	if (dom->cmdq_cnt == MAX_DOM_TX_CMDQ) {
+		CXIP_WARN("At domain command queue max\n");
+		return -FI_EAGAIN;
+	}
+
+	ret = cxip_domain_cmdq_alloc(dom, vni, tc, &cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to allocate domain command queue: %d\n", ret);
+		return ret;
+	}
+
+	*dom_cmdq = cmdq;
+
+	return FI_SUCCESS;
+}
+
+int cxip_domain_emit_idc_put(struct cxip_domain *dom, uint16_t vni,
+			     enum cxi_traffic_class tc,
+			     const struct c_cstate_cmd *c_state,
+			     const struct c_idc_put_cmd *put, const void *buf,
+			     size_t len, uint64_t flags)
+{
+	int ret;
+	struct cxip_domain_cmdq *cmdq;
+
+	ofi_genlock_lock(&dom->cmdq_lock);
+
+	ret = cxip_domain_find_cmdq(dom, vni, tc, &cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to find command queue: %d\n", ret);
+		goto out_unlock;
+	}
+
+	ret = cxip_cmdq_emit_idc_put(cmdq->cmdq, c_state, put, buf, len, flags);
+	if (ret) {
+		CXIP_WARN("Failed to emit idc_put: %d\n", ret);
+		goto out_unlock;
+	}
+
+	cxi_cq_ring(cmdq->cmdq->dev_cmdq);
+
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return FI_SUCCESS;
+
+out_unlock:
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return ret;
+}
+
+int cxip_domain_emit_dma(struct cxip_domain *dom, uint16_t vni,
+			 enum cxi_traffic_class tc, struct c_full_dma_cmd *dma,
+			 uint64_t flags)
+{
+	int ret;
+	struct cxip_domain_cmdq *cmdq;
+
+	ofi_genlock_lock(&dom->cmdq_lock);
+
+	ret = cxip_domain_find_cmdq(dom, vni, tc, &cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to find command queue: %d\n", ret);
+		goto out_unlock;
+	}
+
+	ret = cxip_cmdq_emit_dma(cmdq->cmdq, dma, flags);
+	if (ret) {
+		CXIP_WARN("Failed to emit dma: %d\n", ret);
+		goto out_unlock;
+	}
+
+	cxi_cq_ring(cmdq->cmdq->dev_cmdq);
+
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return FI_SUCCESS;
+
+out_unlock:
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return ret;
+}
+
+int cxip_domain_emit_idc_amo(struct cxip_domain *dom, uint16_t vni,
+			     enum cxi_traffic_class tc,
+			     const struct c_cstate_cmd *c_state,
+			     const struct c_idc_amo_cmd *amo, uint64_t flags,
+			     bool fetching, bool flush)
+{
+	int ret;
+	struct cxip_domain_cmdq *cmdq;
+
+	ofi_genlock_lock(&dom->cmdq_lock);
+
+	ret = cxip_domain_find_cmdq(dom, vni, tc, &cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to find command queue: %d\n", ret);
+		goto out_unlock;
+	}
+
+	ret = cxip_cmdq_emic_idc_amo(cmdq->cmdq, c_state, amo, flags,
+				     fetching, flush);
+	if (ret) {
+		CXIP_WARN("Failed to emit idc_amo: %d\n", ret);
+		goto out_unlock;
+	}
+
+	cxi_cq_ring(cmdq->cmdq->dev_cmdq);
+
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return FI_SUCCESS;
+
+out_unlock:
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return ret;
+}
+
+int cxip_domain_emit_dma_amo(struct cxip_domain *dom, uint16_t vni,
+			     enum cxi_traffic_class tc,
+			     struct c_dma_amo_cmd *amo, uint64_t flags,
+			     bool fetching, bool flush)
+{
+	int ret;
+	struct cxip_domain_cmdq *cmdq;
+
+	ofi_genlock_lock(&dom->cmdq_lock);
+
+	ret = cxip_domain_find_cmdq(dom, vni, tc, &cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to find command queue: %d\n", ret);
+		goto out_unlock;
+	}
+
+	ret = cxip_cmdq_emit_dma_amo(cmdq->cmdq, amo, flags, fetching, flush);
+	if (ret) {
+		CXIP_WARN("Failed to emit amo: %d\n", ret);
+		goto out_unlock;
+	}
+
+	cxi_cq_ring(cmdq->cmdq->dev_cmdq);
+
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return FI_SUCCESS;
+
+out_unlock:
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return ret;
+}
+
+int cxip_domain_emit_idc_msg(struct cxip_domain *dom, uint16_t vni,
+			     enum cxi_traffic_class tc,
+			     const struct c_cstate_cmd *c_state,
+			     const struct c_idc_msg_hdr *msg, const void *buf,
+			     size_t len, uint64_t flags)
+{
+	int ret;
+	struct cxip_domain_cmdq *cmdq;
+
+	ofi_genlock_lock(&dom->cmdq_lock);
+
+	ret = cxip_domain_find_cmdq(dom, vni, tc, &cmdq);
+	if (ret) {
+		CXIP_WARN("Failed to find command queue: %d\n", ret);
+		goto out_unlock;
+	}
+
+	ret = cxip_cmdq_emit_idc_msg(cmdq->cmdq, c_state, msg, buf, len,
+				     flags);
+	if (ret) {
+		CXIP_WARN("Failed to emit idc msg: %d\n", ret);
+		goto out_unlock;
+	}
+
+	cxi_cq_ring(cmdq->cmdq->dev_cmdq);
+
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return FI_SUCCESS;
+
+out_unlock:
+	ofi_genlock_unlock(&dom->cmdq_lock);
+
+	return ret;
+}
+
 /*
  * cxip_domain_req_alloc() - Allocate a domain control buffer ID
  */
@@ -261,13 +564,18 @@ static int cxip_dom_close(struct fid *fid)
 		cxip_telemetry_free(dom->telemetry);
 	}
 
+	cxip_domain_cmdq_free(dom);
 	cxip_domain_disable(dom);
+
+	assert(dlist_empty(&dom->cmdq_list));
+	assert(dom->cmdq_cnt == 0);
 
 	ofi_spin_destroy(&dom->lock);
 	ofi_spin_destroy(&dom->ctrl_id_lock);
 	ofi_idx_reset(&dom->req_ids);
 	ofi_idx_reset(&dom->mr_ids);
 	ofi_domain_close(&dom->util_domain);
+	ofi_genlock_destroy(&dom->cmdq_lock);
 	free(dom);
 
 	return 0;
@@ -300,6 +608,7 @@ static int cxip_dom_dwq_op_send(struct cxip_domain *dom, struct fi_op_msg *msg,
 				uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(msg->ep, struct cxip_ep, ep);
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	const void *buf;
 	size_t len;
 	int ret;
@@ -321,10 +630,10 @@ static int cxip_dom_dwq_op_send(struct cxip_domain *dom, struct fi_op_msg *msg,
 	buf = msg->msg.iov_count ? msg->msg.msg_iov[0].iov_base : NULL;
 	len = msg->msg.iov_count ? msg->msg.msg_iov[0].iov_len : 0;
 
-	ret = cxip_send_common(&ep->ep_obj->txc, ep->tx_attr.tclass, buf, len,
-			       NULL, msg->msg.data, msg->msg.addr, 0,
-			       msg->msg.context, msg->flags, false, true,
-			       trig_thresh, trig_cntr, comp_cntr);
+	ret = txc->ops.send_common(txc, ep->tx_attr.tclass, buf, len, NULL,
+				   msg->msg.data, msg->msg.addr, 0,
+				   msg->msg.context, msg->flags, false, true,
+				   trig_thresh, trig_cntr, comp_cntr);
 	if (ret)
 		CXIP_DBG("Failed to emit message triggered op, ret=%d\n", ret);
 	else
@@ -341,6 +650,7 @@ static int cxip_dom_dwq_op_tsend(struct cxip_domain *dom,
 				 uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(tagged->ep, struct cxip_ep, ep);
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	const void *buf;
 	size_t len;
 	int ret;
@@ -362,11 +672,11 @@ static int cxip_dom_dwq_op_tsend(struct cxip_domain *dom,
 	buf = tagged->msg.iov_count ? tagged->msg.msg_iov[0].iov_base : NULL;
 	len = tagged->msg.iov_count ? tagged->msg.msg_iov[0].iov_len : 0;
 
-	ret = cxip_send_common(&ep->ep_obj->txc, ep->tx_attr.tclass, buf, len,
-			       NULL, tagged->msg.data, tagged->msg.addr,
-			       tagged->msg.tag, tagged->msg.context,
-			       tagged->flags, true, true, trig_thresh,
-			       trig_cntr, comp_cntr);
+	ret = txc->ops.send_common(txc, ep->tx_attr.tclass, buf, len, NULL,
+				   tagged->msg.data, tagged->msg.addr,
+				   tagged->msg.tag, tagged->msg.context,
+				   tagged->flags, true, true, trig_thresh,
+				   trig_cntr, comp_cntr);
 	if (ret)
 		CXIP_DBG("Failed to emit tagged msg triggered op, ret=%d\n",
 			 ret);
@@ -399,7 +709,7 @@ static int cxip_dom_dwq_op_rma(struct cxip_domain *dom, struct fi_op_rma *rma,
 	buf = rma->msg.iov_count ? rma->msg.msg_iov[0].iov_base : NULL;
 	len = rma->msg.iov_count ? rma->msg.msg_iov[0].iov_len : 0;
 
-	ret = cxip_rma_common(op, &ep->ep_obj->txc, buf, len, NULL,
+	ret = cxip_rma_common(op, ep->ep_obj->txc, buf, len, NULL,
 			      rma->msg.addr, rma->msg.rma_iov[0].addr,
 			      rma->msg.rma_iov[0].key, rma->msg.data,
 			      rma->flags, ep->tx_attr.tclass,
@@ -421,7 +731,7 @@ static int cxip_dom_dwq_op_atomic(struct cxip_domain *dom,
 				  uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(amo->ep, struct cxip_ep, ep);
-	struct cxip_txc *txc = &ep->ep_obj->txc;
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	int ret;
 
 	if (!amo)
@@ -451,7 +761,7 @@ static int cxip_dom_dwq_op_fetch_atomic(struct cxip_domain *dom,
 					uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(fetch_amo->ep, struct cxip_ep, ep);
-	struct cxip_txc *txc = &ep->ep_obj->txc;
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	int ret;
 
 	if (!fetch_amo)
@@ -484,7 +794,7 @@ static int cxip_dom_dwq_op_comp_atomic(struct cxip_domain *dom,
 				       uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(comp_amo->ep, struct cxip_ep, ep);
-	struct cxip_txc *txc = &ep->ep_obj->txc;
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	int ret;
 
 	if (!comp_amo)
@@ -562,6 +872,7 @@ static int cxip_dom_dwq_op_recv(struct cxip_domain *dom, struct fi_op_msg *msg,
 				uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(msg->ep, struct cxip_ep, ep);
+	struct cxip_rxc *rxc = ep->ep_obj->rxc;
 	void *buf;
 	size_t len;
 
@@ -572,9 +883,9 @@ static int cxip_dom_dwq_op_recv(struct cxip_domain *dom, struct fi_op_msg *msg,
 	buf = msg->msg.iov_count ? msg->msg.msg_iov[0].iov_base : NULL;
 	len = msg->msg.iov_count ? msg->msg.msg_iov[0].iov_len : 0;
 
-	return cxip_recv_common(&ep->ep_obj->rxc, buf, len, NULL, msg->msg.addr,
-				0, 0, msg->msg.context, msg->flags, false,
-				comp_cntr);
+	return rxc->ops.recv_common(rxc, buf, len, NULL, msg->msg.addr, 0, 0,
+				    msg->msg.context, msg->flags, false,
+				    comp_cntr);
 }
 
 static int cxip_dom_dwq_op_trecv(struct cxip_domain *dom,
@@ -584,6 +895,7 @@ static int cxip_dom_dwq_op_trecv(struct cxip_domain *dom,
 				 uint64_t trig_thresh)
 {
 	struct cxip_ep *ep = container_of(tagged->ep, struct cxip_ep, ep);
+	struct cxip_rxc *rxc = ep->ep_obj->rxc;
 	void *buf;
 	size_t len;
 
@@ -594,10 +906,10 @@ static int cxip_dom_dwq_op_trecv(struct cxip_domain *dom,
 	buf = tagged->msg.iov_count ? tagged->msg.msg_iov[0].iov_base : NULL;
 	len = tagged->msg.iov_count ? tagged->msg.msg_iov[0].iov_len : 0;
 
-	return cxip_recv_common(&ep->ep_obj->rxc, buf, len, tagged->msg.desc,
-				tagged->msg.addr, tagged->msg.tag,
-				tagged->msg.ignore, tagged->msg.context,
-				tagged->flags, true, comp_cntr);
+	return rxc->ops.recv_common(rxc, buf, len, tagged->msg.desc,
+				    tagged->msg.addr, tagged->msg.tag,
+				    tagged->msg.ignore, tagged->msg.context,
+				    tagged->flags, true, comp_cntr);
 }
 
 /* Must hold domain lock. */
@@ -1484,6 +1796,27 @@ int cxip_domain(struct fid_fabric *fabric, struct fi_info *info,
 	cxi_domain->util_domain.domain_fid.fid.ops = &cxip_dom_fi_ops;
 	cxi_domain->util_domain.domain_fid.ops = &cxip_dom_ops;
 	cxi_domain->util_domain.domain_fid.mr = &cxip_dom_mr_ops;
+
+	dlist_init(&cxi_domain->cmdq_list);
+	cxi_domain->cmdq_cnt = 0;
+
+	/* Align domain TX command size based on EP TX size attribute. In
+	 * addition, support ENV vars to override size.
+	 */
+	cxi_domain->tx_size = 0;
+	if (info->tx_attr)
+		cxi_domain->tx_size = info->tx_attr->size;
+
+	if (!info->tx_attr) {
+		cxi_domain->tx_size = cxip_env.default_tx_size;
+		cxi_domain->tx_size =
+			MAX(cxip_env.default_cq_size, cxi_domain->tx_size);
+	}
+
+	if (cxi_domain->util_domain.threading == FI_THREAD_DOMAIN)
+		ofi_genlock_init(&cxi_domain->cmdq_lock, OFI_LOCK_NONE);
+	else
+		ofi_genlock_init(&cxi_domain->cmdq_lock, OFI_LOCK_MUTEX);
 
 	dlist_init(&cxi_domain->txc_list);
 	dlist_init(&cxi_domain->cntr_list);

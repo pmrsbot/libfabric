@@ -503,6 +503,10 @@ static bool cxip_rma_is_idc(struct cxip_txc *txc, uint64_t key, size_t len,
 {
 	size_t max_idc_size = unr ? CXIP_INJECT_SIZE : C_MAX_IDC_PAYLOAD_RES;
 
+	/* DISABLE_NON_INJECT_MSG_IDC disables the IDC
+	 */
+	if (cxip_env.disable_non_inject_msg_idc)
+		return false;
 	/* IDC commands are not supported for unoptimized MR since the IDC
 	 * small message format does not support remote offset which is needed
 	 * for RMA commands.
@@ -650,7 +654,7 @@ static ssize_t cxip_rma_write(struct fid_ep *fid_ep, const void *buf,
 {
 	struct cxip_ep *ep = container_of(fid_ep, struct cxip_ep, ep);
 
-	return cxip_rma_common(FI_OP_WRITE, &ep->ep_obj->txc, buf, len, desc,
+	return cxip_rma_common(FI_OP_WRITE, ep->ep_obj->txc, buf, len, desc,
 			       dest_addr, addr, key, 0, ep->tx_attr.op_flags,
 			       ep->tx_attr.tclass, ep->tx_attr.msg_order,
 			       context, false, 0, NULL, NULL);
@@ -674,11 +678,11 @@ static ssize_t cxip_rma_writev(struct fid_ep *fid_ep, const struct iovec *iov,
 		buf = iov[0].iov_base;
 		mr_desc = desc ? desc[0] : NULL;
 	} else {
-		TXC_WARN(&ep->ep_obj->txc, "Invalid IOV\n");
+		TXC_WARN(ep->ep_obj->txc, "Invalid IOV\n");
 		return -FI_EINVAL;
 	}
 
-	return cxip_rma_common(FI_OP_WRITE, &ep->ep_obj->txc, buf, len,
+	return cxip_rma_common(FI_OP_WRITE, ep->ep_obj->txc, buf, len,
 			       mr_desc, dest_addr, addr, key, 0,
 			       ep->tx_attr.op_flags, ep->tx_attr.tclass,
 			       ep->tx_attr.msg_order, context, false, 0, NULL,
@@ -689,7 +693,7 @@ static ssize_t cxip_rma_writemsg(struct fid_ep *fid_ep,
 				 const struct fi_msg_rma *msg, uint64_t flags)
 {
 	struct cxip_ep *ep = container_of(fid_ep, struct cxip_ep, ep);
-	struct cxip_txc *txc = &ep->ep_obj->txc;
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	size_t len;
 	const void *buf;
 	void *mr_desc;
@@ -713,7 +717,7 @@ static ssize_t cxip_rma_writemsg(struct fid_ep *fid_ep,
 		buf = msg->msg_iov[0].iov_base;
 		mr_desc = msg->desc ? msg->desc[0] : NULL;
 	} else {
-		TXC_WARN(&ep->ep_obj->txc, "Invalid IOV\n");
+		TXC_WARN(ep->ep_obj->txc, "Invalid IOV\n");
 		return -FI_EINVAL;
 	}
 
@@ -742,7 +746,7 @@ ssize_t cxip_rma_inject(struct fid_ep *fid_ep, const void *buf, size_t len,
 {
 	struct cxip_ep *ep = container_of(fid_ep, struct cxip_ep, ep);
 
-	return cxip_rma_common(FI_OP_WRITE, &ep->ep_obj->txc, buf, len, NULL,
+	return cxip_rma_common(FI_OP_WRITE, ep->ep_obj->txc, buf, len, NULL,
 			       dest_addr, addr, key, 0, FI_INJECT,
 			       ep->tx_attr.tclass, ep->tx_attr.msg_order, NULL,
 			       false, 0, NULL, NULL);
@@ -754,7 +758,7 @@ static ssize_t cxip_rma_read(struct fid_ep *fid_ep, void *buf, size_t len,
 {
 	struct cxip_ep *ep = container_of(fid_ep, struct cxip_ep, ep);
 
-	return cxip_rma_common(FI_OP_READ, &ep->ep_obj->txc, buf, len, desc,
+	return cxip_rma_common(FI_OP_READ, ep->ep_obj->txc, buf, len, desc,
 			       src_addr, addr, key, 0, ep->tx_attr.op_flags,
 			       ep->tx_attr.tclass, ep->tx_attr.msg_order,
 			       context, false, 0, NULL, NULL);
@@ -778,11 +782,11 @@ static ssize_t cxip_rma_readv(struct fid_ep *fid_ep, const struct iovec *iov,
 		buf = iov[0].iov_base;
 		mr_desc = desc ? desc[0] : NULL;
 	} else {
-		TXC_WARN(&ep->ep_obj->txc, "Invalid IOV\n");
+		TXC_WARN(ep->ep_obj->txc, "Invalid IOV\n");
 		return -FI_EINVAL;
 	}
 
-	return cxip_rma_common(FI_OP_READ, &ep->ep_obj->txc, buf, len, mr_desc,
+	return cxip_rma_common(FI_OP_READ, ep->ep_obj->txc, buf, len, mr_desc,
 			       src_addr, addr, key, 0, ep->tx_attr.op_flags,
 			       ep->tx_attr.tclass, ep->tx_attr.msg_order,
 			       context, false, 0, NULL, NULL);
@@ -792,7 +796,7 @@ static ssize_t cxip_rma_readmsg(struct fid_ep *fid_ep,
 				const struct fi_msg_rma *msg, uint64_t flags)
 {
 	struct cxip_ep *ep = container_of(fid_ep, struct cxip_ep, ep);
-	struct cxip_txc *txc = &ep->ep_obj->txc;
+	struct cxip_txc *txc = ep->ep_obj->txc;
 	size_t len;
 	const void *buf;
 	void *mr_desc;
@@ -816,7 +820,7 @@ static ssize_t cxip_rma_readmsg(struct fid_ep *fid_ep,
 		buf = msg->msg_iov[0].iov_base;
 		mr_desc = msg->desc ? msg->desc[0] : NULL;
 	} else {
-		TXC_WARN(&ep->ep_obj->txc, "Invalid IOV\n");
+		TXC_WARN(ep->ep_obj->txc, "Invalid IOV\n");
 		return -FI_EINVAL;
 	}
 

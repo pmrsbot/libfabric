@@ -1,35 +1,5 @@
-/*
- * Copyright (c) Amazon.com, Inc. or its affiliates.
- * All rights reserved.
- *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: Copyright Amazon.com, Inc. or its affiliates. All rights reserved. */
 
 #include "ofi_iov.h"
 #include "ofi_proto.h"
@@ -505,7 +475,7 @@ void efa_rdm_pke_handle_rtm_rta_recv(struct efa_rdm_pke *pkt_entry)
 				"Invalid msg_id: %" PRIu32
 				" robuf->exp_msg_id: %" PRIu32 "\n",
 			       msg_id, peer->robuf.exp_msg_id);
-			efa_base_ep_write_eq_error(&ep->base_ep, FI_EIO, FI_EFA_ERR_PKT_ALREADY_PROCESSED);
+			efa_base_ep_write_eq_error(&ep->base_ep, ret, FI_EFA_ERR_PKT_ALREADY_PROCESSED);
 			efa_rdm_pke_release_rx(pkt_entry);
 			return;
 		}
@@ -519,7 +489,7 @@ void efa_rdm_pke_handle_rtm_rta_recv(struct efa_rdm_pke *pkt_entry)
 		EFA_WARN(FI_LOG_EP_CTRL,
 			"Unknown error %d processing REQ packet msg_id: %"
 			PRIu32 "\n", ret, msg_id);
-		efa_base_ep_write_eq_error(&ep->base_ep, FI_EIO, FI_EFA_ERR_OTHER);
+		efa_base_ep_write_eq_error(&ep->base_ep, ret, FI_EFA_ERR_OTHER);
 		return;
 	}
 
@@ -700,7 +670,6 @@ ssize_t efa_rdm_pke_proc_matched_eager_rtm(struct efa_rdm_pke *pkt_entry)
 		 */
 		rxe->cq_entry.len = 0;
 	} else {
-		assert(rxe->cq_entry.buf == pkt_entry->wiredata - sizeof(struct efa_rdm_pke));
 		rxe->cq_entry.len = pkt_entry->pkt_size + sizeof(struct efa_rdm_pke);
 	}
 
@@ -1202,11 +1171,7 @@ ssize_t efa_rdm_pke_init_longread_tagrtm(struct efa_rdm_pke *pkt_entry,
  */
 void efa_rdm_pke_handle_longread_rtm_sent(struct efa_rdm_pke *pkt_entry)
 {
-	struct efa_rdm_peer *peer;
-
-	peer = efa_rdm_ep_get_peer(pkt_entry->ep, pkt_entry->addr);
-	assert(peer);
-	peer->num_read_msg_in_flight += 1;
+	efa_rdm_ep_domain(pkt_entry->ep)->num_read_msg_in_flight += 1;
 }
 
 /**
@@ -1387,7 +1352,7 @@ void efa_rdm_pke_handle_runtread_rtm_sent(struct efa_rdm_pke *pkt_entry)
 
 	if (efa_rdm_pke_get_runtread_rtm_base_hdr(pkt_entry)->seg_offset == 0 &&
 	    txe->total_len > txe->bytes_runt)
-		peer->num_read_msg_in_flight += 1;
+		efa_rdm_ep_domain(pkt_entry->ep)->num_read_msg_in_flight += 1;
 }
 
 /**

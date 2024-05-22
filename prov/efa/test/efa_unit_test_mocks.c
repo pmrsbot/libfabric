@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only */
+/* SPDX-FileCopyrightText: Copyright Amazon.com, Inc. or its affiliates. All rights reserved. */
+
 #define _GNU_SOURCE
 #include <errno.h>
 #include <stdlib.h>
@@ -169,6 +172,11 @@ uint32_t efa_mock_ibv_read_vendor_err_return_mock(struct ibv_cq_ex *current)
 	return mock();
 }
 
+uint32_t efa_mock_ibv_read_qp_num_return_mock(struct ibv_cq_ex *current)
+{
+	return mock();
+}
+
 int g_ofi_copy_from_hmem_iov_call_counter;
 ssize_t efa_mock_ofi_copy_from_hmem_iov_inc_counter(void *dest, size_t size,
 						    enum fi_hmem_iface hmem_iface, uint64_t device,
@@ -194,6 +202,9 @@ struct efa_unit_test_mocks g_efa_unit_test_mocks = {
 	.ibv_is_fork_initialized = __real_ibv_is_fork_initialized,
 #if HAVE_EFADV_QUERY_MR
 	.efadv_query_mr = __real_efadv_query_mr,
+#endif
+#if HAVE_EFA_DATA_IN_ORDER_ALIGNED_128_BYTES
+	.ibv_query_qp_data_in_order = __real_ibv_query_qp_data_in_order,
 #endif
 };
 
@@ -349,3 +360,20 @@ int efa_mock_efadv_query_mr_recv_and_rdma_read_ic_id_0_1(struct ibv_mr *ibv_mr, 
 }
 
 #endif /* HAVE_EFADV_QUERY_MR */
+
+#if HAVE_EFA_DATA_IN_ORDER_ALIGNED_128_BYTES
+int __wrap_ibv_query_qp_data_in_order(struct ibv_qp *qp, enum ibv_wr_opcode op, uint32_t flags)
+{
+	return g_efa_unit_test_mocks.ibv_query_qp_data_in_order(qp, op, flags);
+}
+
+int efa_mock_ibv_query_qp_data_in_order_return_0(struct ibv_qp *qp, enum ibv_wr_opcode op, uint32_t flags)
+{
+	return 0;
+}
+
+int efa_mock_ibv_query_qp_data_in_order_return_in_order_aligned_128_bytes(struct ibv_qp *qp, enum ibv_wr_opcode op, uint32_t flags)
+{
+	return IBV_QUERY_QP_DATA_IN_ORDER_ALIGNED_128_BYTES;
+}
+#endif

@@ -34,7 +34,7 @@
 #define CXIP_INFO(...) _CXIP_INFO(FI_LOG_EP_CTRL, __VA_ARGS__)
 #define CXIP_WARN(...) _CXIP_WARN(FI_LOG_EP_CTRL, __VA_ARGS__)
 
-#define	TRACE(fmt, ...)	CXIP_TRACE(CXIP_TRC_ZBCOLL, fmt, ##__VA_ARGS__)
+#define	TRACE(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_ZBCOLL, fmt, ##__VA_ARGS__)
 
 /* see data packing structures below */
 #define	ZB_MAP_BITS	54
@@ -783,6 +783,7 @@ static void zbsend(struct cxip_ep_obj *ep_obj, uint32_t dstnic, uint32_t dstpid,
 	req->cb = zbdata_send_cb;
 	req->send.nic_addr = dstnic;
 	req->send.pid = dstpid;
+	req->send.vni = ep_obj->auth_key.vni;
 	req->send.mb.raw = mbv;
 	req->send.mb.ctrl_le_type = CXIP_CTRL_LE_TYPE_CTRL_MSG;
 	req->send.mb.ctrl_msg_type = CXIP_CTRL_MSG_ZB_DATA;

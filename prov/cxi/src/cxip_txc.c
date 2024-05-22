@@ -20,6 +20,9 @@
 /* 8 Rendezvous, 2 RMA and 2 Atomic + 4 extra */
 #define CXIP_INTERNAL_TX_REQS	16
 
+extern struct cxip_txc_ops hpc_txc_ops;
+extern struct cxip_txc_ops rnr_txc_ops;
+
 struct cxip_md *cxip_txc_ibuf_md(void *ibuf)
 {
 	return ofi_buf_hdr(ibuf)->region->context;
@@ -112,7 +115,7 @@ int cxip_txc_ibuf_create(struct cxip_txc *txc)
  *
  * Caller must hold txc->ep_obj.lock
  */
-int cxip_tx_id_alloc(struct cxip_txc *txc, void *ctx)
+int cxip_tx_id_alloc(struct cxip_txc_hpc *txc, void *ctx)
 {
 	int id;
 
@@ -135,7 +138,7 @@ int cxip_tx_id_alloc(struct cxip_txc *txc, void *ctx)
  *
  * Caller must hold txc->ep_obj.lock
  */
-int cxip_tx_id_free(struct cxip_txc *txc, int id)
+int cxip_tx_id_free(struct cxip_txc_hpc *txc, int id)
 {
 	if (id < 0 || id >= CXIP_TX_IDS)
 		return -FI_EINVAL;
@@ -147,7 +150,7 @@ int cxip_tx_id_free(struct cxip_txc *txc, int id)
 }
 
 /* Caller must hold txc->ep_obj.lock */
-void *cxip_tx_id_lookup(struct cxip_txc *txc, int id)
+void *cxip_tx_id_lookup(struct cxip_txc_hpc *txc, int id)
 {
 	return ofi_idx_lookup(&txc->tx_ids, id);
 }
@@ -160,7 +163,7 @@ void *cxip_tx_id_lookup(struct cxip_txc *txc, int id)
  *
  * Caller must hold txc->ep_obj->lock.
  */
-int cxip_rdzv_id_alloc(struct cxip_txc *txc, struct cxip_req *req)
+int cxip_rdzv_id_alloc(struct cxip_txc_hpc *txc, struct cxip_req *req)
 {
 	struct indexer *rdzv_ids;
 	int max_rdzv_id;
@@ -202,7 +205,7 @@ int cxip_rdzv_id_alloc(struct cxip_txc *txc, struct cxip_req *req)
  *
  * Caller must hold txc->ep_obj->lock.
  */
-int cxip_rdzv_id_free(struct cxip_txc *txc, int id)
+int cxip_rdzv_id_free(struct cxip_txc_hpc *txc, int id)
 {
 	if (id < 0 || id >= CXIP_RDZV_IDS)
 		return -FI_EINVAL;
@@ -221,7 +224,7 @@ int cxip_rdzv_id_free(struct cxip_txc *txc, int id)
 }
 
 /* Caller must hold txc->ep_obj->lock. */
-void *cxip_rdzv_id_lookup(struct cxip_txc *txc, int id)
+void *cxip_rdzv_id_lookup(struct cxip_txc_hpc *txc, int id)
 {
 
 	if (id >= CXIP_RDZV_IDS_MULTI_RECV) {
@@ -240,31 +243,12 @@ void *cxip_rdzv_id_lookup(struct cxip_txc *txc, int id)
  */
 static int txc_msg_init(struct cxip_txc *txc)
 {
-	int ret;
+	int ret = FI_SUCCESS;
 
-	/* Allocate TGQ for posting source data */
-	ret = cxip_ep_cmdq(txc->ep_obj, false, FI_TC_UNSPEC,
-			   txc->tx_evtq.eq, &txc->rx_cmdq);
-	if (ret != FI_SUCCESS) {
-		CXIP_WARN("Unable to allocate TGQ, ret: %d\n", ret);
-		return -FI_EDOMAIN;
-	}
+	/* Any common initialization should be added here */
 
-	ret = cxip_rdzv_match_pte_alloc(txc, &txc->rdzv_pte);
-	if (ret) {
-		CXIP_WARN("Failed to allocate rendezvous PtlTE: %d:%s\n", ret,
-			  fi_strerror(-ret));
-		goto err_put_rx_cmdq;
-	}
-	txc->rdzv_proto = cxip_env.rdzv_proto;
-
-	CXIP_DBG("TXC RDZV PtlTE enabled: %p proto: %s\n",
-		 txc, cxip_rdzv_proto_to_str(txc->rdzv_proto));
-
-	return FI_SUCCESS;
-
-err_put_rx_cmdq:
-	cxip_ep_cmdq_put(txc->ep_obj, false);
+	/* Derived TXC message initialization */
+	ret = txc->ops.msg_init(txc);
 
 	return ret;
 }
@@ -279,18 +263,14 @@ err_put_rx_cmdq:
  */
 static int txc_msg_fini(struct cxip_txc *txc)
 {
-	int i;
+	int ret;
 
-	cxip_rdzv_match_pte_free(txc->rdzv_pte);
+	/* Any common cleanup should be added here */
 
-	for (i = 0; i < RDZV_NO_MATCH_PTES; i++) {
-		if (txc->rdzv_nomatch_pte[i])
-			cxip_rdzv_nomatch_pte_free(txc->rdzv_nomatch_pte[i]);
-	}
+	/* Derived TXC message cleanup */
+	ret = txc->ops.msg_fini(txc);
 
-	cxip_ep_cmdq_put(txc->ep_obj, false);
-
-	return FI_SUCCESS;
+	return ret;
 }
 
 static size_t cxip_txc_get_num_events(struct cxip_txc *txc)
@@ -343,12 +323,8 @@ int cxip_txc_enable(struct cxip_txc *txc)
 		return ret;
 	}
 
-	/* Protected with ep_obj->lock */
-	memset(&txc->rdzv_ids, 0, sizeof(txc->rdzv_ids));
-	memset(&txc->msg_rdzv_ids, 0, sizeof(txc->msg_rdzv_ids));
-	memset(&txc->tx_ids, 0, sizeof(txc->tx_ids));
-
 	num_events = cxip_txc_get_num_events(txc);
+
 	ret = cxip_evtq_init(&txc->tx_evtq, txc->send_cq, num_events, 0);
 	if (ret) {
 		CXIP_WARN("Failed to initialize TX event queue: %d, %s\n",
@@ -356,8 +332,8 @@ int cxip_txc_enable(struct cxip_txc *txc)
 		goto destroy_ibuf;
 	}
 
-	ret = cxip_ep_cmdq(txc->ep_obj, true, txc->tclass,
-			   txc->tx_evtq.eq, &txc->tx_cmdq);
+	ret = cxip_ep_cmdq(txc->ep_obj, true, txc->tclass, txc->tx_evtq.eq,
+			   &txc->tx_cmdq);
 	if (ret != FI_SUCCESS) {
 		CXIP_WARN("Unable to allocate TX CMDQ, ret: %d\n", ret);
 		ret = -FI_EDOMAIN;
@@ -373,7 +349,6 @@ int cxip_txc_enable(struct cxip_txc *txc)
 		}
 	}
 
-	txc->pid_bits = txc->domain->iface->dev->info.pid_bits;
 	txc->enabled = true;
 
 	return FI_SUCCESS;
@@ -383,9 +358,6 @@ put_tx_cmdq:
 destroy_evtq:
 	cxip_evtq_fini(&txc->tx_evtq);
 destroy_ibuf:
-	ofi_idx_reset(&txc->tx_ids);
-	ofi_idx_reset(&txc->rdzv_ids);
-	ofi_idx_reset(&txc->msg_rdzv_ids);
 	ofi_bufpool_destroy(txc->ibuf_pool);
 
 	return ret;
@@ -402,11 +374,9 @@ destroy_ibuf:
 static void txc_cleanup(struct cxip_txc *txc)
 {
 	uint64_t start;
-	struct cxip_fc_peer *fc_peer;
-	struct dlist_entry *tmp;
 
 	if (!ofi_atomic_get32(&txc->otx_reqs))
-		goto free_fc_peers;
+		goto proto_cleanup;
 
 	cxip_evtq_req_discard(&txc->tx_evtq, txc);
 
@@ -425,27 +395,10 @@ static void txc_cleanup(struct cxip_txc *txc)
 
 	assert(ofi_atomic_get32(&txc->otx_reqs) == 0);
 
-free_fc_peers:
-	dlist_foreach_container_safe(&txc->fc_peers, struct cxip_fc_peer,
-				     fc_peer, txc_entry, tmp) {
-		dlist_remove(&fc_peer->txc_entry);
-		free(fc_peer);
-	}
-}
+proto_cleanup:
+	txc->ops.cleanup(txc);
 
-void cxip_txc_struct_init(struct cxip_txc *txc, const struct fi_tx_attr *attr,
-			  void *context)
-{
-	dlist_init(&txc->ep_list);
-	ofi_atomic_initialize32(&txc->otx_reqs, 0);
-	dlist_init(&txc->msg_queue);
-	dlist_init(&txc->fc_peers);
-
-	txc->context = context;
-	txc->attr = *attr;
-	txc->max_eager_size = cxip_env.rdzv_threshold + cxip_env.rdzv_get_min;
-	txc->rdzv_eager_size = cxip_env.rdzv_eager_size;
-	txc->hmem = !!(attr->caps & FI_HMEM);
+	ofi_bufpool_destroy(txc->ibuf_pool);
 }
 
 /*
@@ -463,11 +416,6 @@ void cxip_txc_disable(struct cxip_txc *txc)
 
 	txc->enabled = false;
 	txc_cleanup(txc);
-
-	ofi_idx_reset(&txc->tx_ids);
-	ofi_idx_reset(&txc->rdzv_ids);
-	ofi_idx_reset(&txc->msg_rdzv_ids);
-	ofi_bufpool_destroy(txc->ibuf_pool);
 
 	if (ofi_send_allowed(txc->attr.caps)) {
 		ret = txc_msg_fini(txc);
@@ -528,8 +476,20 @@ int cxip_txc_emit_idc_put(struct cxip_txc *txc, uint16_t vni,
 	if (!cxip_txc_can_emit_op(txc, c_state->event_success_disable))
 		return -FI_EAGAIN;
 
+	if (txc->ep_obj->av_auth_key) {
+		ret = cxip_domain_emit_idc_put(txc->domain, vni, tc, c_state,
+					       put, buf, len, flags);
+		if (ret)
+			TXC_WARN(txc, "Failed to emit domain idc put: %d\n",
+				 ret);
+		else if (!c_state->event_success_disable)
+			ofi_atomic_inc32(&txc->otx_reqs);
+
+		return ret;
+	}
+
 	/* Ensure correct traffic class is used. */
-	ret = cxip_txq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
+	ret = cxip_cmdq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
 	if (ret) {
 		TXC_WARN(txc, "Failed to set traffic class: %d:%s\n", ret,
 			 fi_strerror(-ret));
@@ -579,8 +539,19 @@ int cxip_txc_emit_dma(struct cxip_txc *txc, uint16_t vni,
 		return ret;
 	}
 
+	if (txc->ep_obj->av_auth_key) {
+		ret = cxip_domain_emit_dma(txc->domain, vni, tc, dma, flags);
+		if (ret)
+			TXC_WARN(txc, "Failed to emit domain dma command: %d\n",
+				 ret);
+		else if (!dma->event_success_disable)
+			ofi_atomic_inc32(&txc->otx_reqs);
+
+		return ret;
+	}
+
 	/* Ensure correct traffic class is used. */
-	ret = cxip_txq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
+	ret = cxip_cmdq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
 	if (ret) {
 		TXC_WARN(txc, "Failed to set traffic class: %d:%s\n", ret,
 			 fi_strerror(-ret));
@@ -616,8 +587,20 @@ int cxip_txc_emit_idc_amo(struct cxip_txc *txc, uint16_t vni,
 	if (!cxip_txc_can_emit_op(txc, c_state->event_success_disable))
 		return -FI_EAGAIN;
 
+	if (txc->ep_obj->av_auth_key) {
+		ret = cxip_domain_emit_idc_amo(txc->domain, vni, tc, c_state,
+					       amo, flags, fetching, flush);
+		if (ret)
+			TXC_WARN(txc, "Failed to emit domain idc amo: %d\n",
+				 ret);
+		else if (!c_state->event_success_disable)
+			ofi_atomic_inc32(&txc->otx_reqs);
+
+		return ret;
+	}
+
 	/* Ensure correct traffic class is used. */
-	ret = cxip_txq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
+	ret = cxip_cmdq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
 	if (ret) {
 		TXC_WARN(txc, "Failed to set traffic class: %d:%s\n", ret,
 			 fi_strerror(-ret));
@@ -669,8 +652,20 @@ int cxip_txc_emit_dma_amo(struct cxip_txc *txc, uint16_t vni,
 		return ret;
 	}
 
+	if (txc->ep_obj->av_auth_key) {
+		ret = cxip_domain_emit_dma_amo(txc->domain, vni, tc, amo, flags,
+					       fetching, flush);
+		if (ret)
+			TXC_WARN(txc, "Failed to emit domain amo: %d\n",
+				 ret);
+		else if (!amo->event_success_disable)
+			ofi_atomic_inc32(&txc->otx_reqs);
+
+		return ret;
+	}
+
 	/* Ensure correct traffic class is used. */
-	ret = cxip_txq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
+	ret = cxip_cmdq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
 	if (ret) {
 		TXC_WARN(txc, "Failed to set traffic class: %d:%s\n", ret,
 			 fi_strerror(-ret));
@@ -692,4 +687,114 @@ int cxip_txc_emit_dma_amo(struct cxip_txc *txc, uint16_t vni,
 		ofi_atomic_inc32(&txc->otx_reqs);
 
 	return FI_SUCCESS;
+}
+
+int cxip_txc_emit_idc_msg(struct cxip_txc *txc, uint16_t vni,
+			  enum cxi_traffic_class tc,
+			  enum cxi_traffic_class_type tc_type,
+			  const struct c_cstate_cmd *c_state,
+			  const struct c_idc_msg_hdr *msg, const void *buf,
+			  size_t len, uint64_t flags)
+{
+	int ret;
+
+	if (!cxip_txc_can_emit_op(txc, c_state->event_success_disable))
+		return -FI_EAGAIN;
+
+	if (txc->ep_obj->av_auth_key) {
+		ret = cxip_domain_emit_idc_msg(txc->domain, vni, tc, c_state,
+					       msg, buf, len, flags);
+		if (ret)
+			TXC_WARN(txc, "Failed to emit domain idc msg: %d\n",
+				 ret);
+		else if (!c_state->event_success_disable)
+			ofi_atomic_inc32(&txc->otx_reqs);
+
+		return ret;
+	}
+
+	/* Ensure correct traffic class is used. */
+	ret = cxip_cmdq_cp_set(txc->tx_cmdq, vni, tc, tc_type);
+	if (ret) {
+		TXC_WARN(txc, "Failed to set traffic class: %d:%s\n", ret,
+			 fi_strerror(-ret));
+		return ret;
+	}
+
+	ret = cxip_cmdq_emit_idc_msg(txc->tx_cmdq, c_state, msg, buf, len,
+				     flags);
+	if (ret) {
+		TXC_WARN(txc, "Failed to emit idc_msg command: %d:%s\n", ret,
+			 fi_strerror(-ret));
+		return ret;
+	}
+
+	/* Kick the command queue. */
+	cxip_txq_ring(txc->tx_cmdq, !!(flags & FI_MORE),
+		      ofi_atomic_get32(&txc->otx_reqs));
+
+	if (!c_state->event_success_disable)
+		ofi_atomic_inc32(&txc->otx_reqs);
+
+	return FI_SUCCESS;
+}
+
+struct cxip_txc *cxip_txc_calloc(struct cxip_ep_obj *ep_obj, void *context)
+{
+	struct cxip_txc *txc = NULL;
+
+	switch (ep_obj->protocol) {
+	case FI_PROTO_CXI:
+		txc = calloc(1, sizeof(struct cxip_txc_hpc));
+		if (txc)
+			txc->ops = hpc_txc_ops;
+		break;
+	case FI_PROTO_CXI_RNR:
+		txc = calloc(1, sizeof(struct cxip_txc_rnr));
+		if (txc)
+			txc->ops = rnr_txc_ops;
+		break;
+	default:
+		CXIP_WARN("Unsupported EP protocol requested %d\n",
+			  ep_obj->protocol);
+		return NULL;
+	}
+
+	if (!txc) {
+		CXIP_WARN("Memory allocation failure\n");
+		return NULL;
+	}
+
+	/* Common structure initialization */
+	txc->protocol = ep_obj->protocol;
+	txc->context = context;
+	txc->ep_obj = ep_obj;
+	txc->domain = ep_obj->domain;
+	txc->tclass = ep_obj->tx_attr.tclass;
+	txc->hrp_war_req = ep_obj->asic_ver < CASSINI_2_0;
+	txc->attr = ep_obj->tx_attr;
+	txc->hmem = !!(txc->attr.caps & FI_HMEM);
+	txc->pid_bits = txc->domain->iface->dev->info.pid_bits;
+
+	dlist_init(&txc->msg_queue);
+	dlist_init(&txc->dom_entry);
+	ofi_atomic_initialize32(&txc->otx_reqs, 0);
+
+	/* Derived initialization/overrides */
+	txc->ops.init_struct(txc, ep_obj);
+
+	return txc;
+}
+
+void cxip_txc_free(struct cxip_txc *txc)
+{
+	if (!txc)
+		return;
+
+	/* Derived structure free */
+	txc->ops.fini_struct(txc);
+
+	/* Any base stuff */
+
+	free(txc);
 }

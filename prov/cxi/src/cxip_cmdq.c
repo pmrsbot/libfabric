@@ -125,15 +125,14 @@ err_unlock:
 	return ret;
 }
 
-int cxip_txq_cp_set(struct cxip_cmdq *cmdq, uint16_t vni,
-		    enum cxi_traffic_class tc,
-		    enum cxi_traffic_class_type tc_type)
+int cxip_cmdq_cp_set(struct cxip_cmdq *cmdq, uint16_t vni,
+		     enum cxi_traffic_class tc,
+		     enum cxi_traffic_class_type tc_type)
 {
 	struct cxi_cp *cp;
 	int ret;
 
-	if (cmdq->cur_cp->vni == vni && cmdq->cur_cp->tc == tc &&
-	    cmdq->cur_cp->tc_type == tc_type)
+	if (cxip_cmdq_match(cmdq, vni, tc, tc_type))
 		return FI_SUCCESS;
 
 	ret = cxip_cp_get(cmdq->lni, vni, tc, tc_type, &cp);
@@ -419,6 +418,39 @@ int cxip_cmdq_emit_dma_amo(struct cxip_cmdq *cmdq, struct c_dma_amo_cmd *amo,
 		 */
 		ret = cxi_cq_emit_dma(cmdq->dev_cmdq, &flush_cmd);
 		assert(ret == 0);
+	}
+
+	return FI_SUCCESS;
+}
+
+int cxip_cmdq_emit_idc_msg(struct cxip_cmdq *cmdq,
+			   const struct c_cstate_cmd *c_state,
+			   const struct c_idc_msg_hdr *msg, const void *buf,
+			   size_t len, uint64_t flags)
+{
+	int ret;
+
+	if (flags & (FI_FENCE | FI_CXI_WEAK_FENCE)) {
+		ret = cxi_cq_emit_cq_cmd(cmdq->dev_cmdq, C_CMD_CQ_FENCE);
+		if (ret) {
+			CXIP_WARN("Failed to issue fence command: %d:%s\n", ret,
+				  fi_strerror(-ret));
+			return -FI_EAGAIN;
+		}
+	}
+
+	ret = cxip_cmdq_emit_c_state(cmdq, c_state);
+	if (ret) {
+		CXIP_WARN("Failed to emit c_state command: %d:%s\n", ret,
+			  fi_strerror(-ret));
+		return ret;
+	}
+
+	ret = cxi_cq_emit_idc_msg(cmdq->dev_cmdq, msg, buf, len);
+	if (ret) {
+		CXIP_WARN("Failed to emit idc_msg command: %d:%s\n", ret,
+			  fi_strerror(-ret));
+		return -FI_EAGAIN;
 	}
 
 	return FI_SUCCESS;

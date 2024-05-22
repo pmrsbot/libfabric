@@ -57,10 +57,8 @@ void efa_rdm_txe_construct(struct efa_rdm_ope *txe,
 	txe->cq_entry.len = ofi_total_iov_len(txe->iov, txe->iov_count);
 	txe->cq_entry.buf = OFI_LIKELY(txe->cq_entry.len > 0) ? txe->iov[0].iov_base : NULL;
 
-	if (ep->msg_prefix_size > 0) {
-		assert(txe->iov[0].iov_len >= ep->msg_prefix_size);
-		txe->iov[0].iov_base = (char *)txe->iov[0].iov_base + ep->msg_prefix_size;
-		txe->iov[0].iov_len -= ep->msg_prefix_size;
+	if (ep->user_info->mode & FI_MSG_PREFIX) {
+		ofi_consume_iov_desc(txe->iov, txe->desc, &txe->iov_count, ep->msg_prefix_size);
 	}
 	txe->total_len = ofi_total_iov_len(txe->iov, txe->iov_count);
 
@@ -1206,7 +1204,7 @@ ssize_t efa_rdm_txe_prepare_local_read_pkt_entry(struct efa_rdm_ope *txe)
 	struct efa_rdm_pke *pkt_entry_copy;
 
 	assert(txe->type == EFA_RDM_TXE);
-	assert(txe->rma_iov_count == 1);
+	assert(txe->rma_iov_count > 0 && txe->rma_iov_count <= efa_rdm_ep_domain(txe->ep)->info->tx_attr->rma_iov_limit);
 
 	pkt_entry = txe->local_read_pkt_entry;
 	if (pkt_entry->mr && !(txe->ep->sendrecv_in_order_aligned_128_bytes))
@@ -1288,10 +1286,10 @@ int efa_rdm_ope_post_read(struct efa_rdm_ope *ope)
 	struct efa_rdm_ep *ep;
 	struct efa_rdm_pke *pkt_entry;
 
-	assert(ope->iov_count > 0);
-	assert(ope->rma_iov_count > 0);
-
 	ep = ope->ep;
+
+	assert(ope->iov_count > 0 && ope->iov_count <= efa_rdm_ep_domain(ep)->info->tx_attr->iov_limit);
+	assert(ope->rma_iov_count > 0 && ope->rma_iov_count <= efa_rdm_ep_domain(ep)->info->tx_attr->rma_iov_limit);
 
 	if (ope->bytes_read_total_len == 0) {
 
@@ -1433,9 +1431,11 @@ int efa_rdm_ope_post_remote_write(struct efa_rdm_ope *ope)
 	struct efa_rdm_ep *ep;
 	struct efa_rdm_pke *pkt_entry;
 
-	assert(ope->iov_count > 0);
-	assert(ope->rma_iov_count > 0);
 	ep = ope->ep;
+
+	assert(ope->iov_count > 0 && ope->iov_count <= efa_rdm_ep_domain(ep)->info->tx_attr->iov_limit);
+	assert(ope->rma_iov_count > 0 && ope->rma_iov_count <= efa_rdm_ep_domain(ep)->info->tx_attr->rma_iov_limit);
+
 	if (ope->bytes_write_total_len == 0) {
 		/* According to libfabric document
 		 *     https://ofiwg.github.io/libfabric/main/man/fi_rma.3.html
@@ -1665,7 +1665,12 @@ int efa_rdm_rxe_post_local_read_or_queue(struct efa_rdm_ope *rxe,
 	}
 
 	txe->local_read_pkt_entry = pkt_entry;
-	return efa_rdm_ope_post_remote_read_or_queue(txe);
+	err = efa_rdm_ope_post_remote_read_or_queue(txe);
+	/* The rx pkts are held until the local read completes */
+	if (txe->local_read_pkt_entry->alloc_type == EFA_RDM_PKE_FROM_EFA_RX_POOL && !err)
+		txe->ep->efa_rx_pkts_held++;
+
+	return err;
 }
 
 /**

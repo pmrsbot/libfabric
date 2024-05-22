@@ -15,7 +15,6 @@ endif
 bin_PROGRAMS = \
 	functional/fi_av_xfer \
 	functional/fi_msg \
-	functional/fi_stream_msg \
 	functional/fi_msg_sockets \
 	functional/fi_rdm \
 	functional/fi_rdm_rma_event \
@@ -112,6 +111,8 @@ nobase_dist_config_DATA = \
         test_configs/verbs/all.test \
         test_configs/verbs/quick.test \
 	test_configs/verbs/verbs.exclude \
+	test_configs/usnic/all.test \
+	test_configs/usnic/quick.test \
 	test_configs/psm2/all.test \
 	test_configs/psm2/verify.test \
 	test_configs/psm2/psm2.exclude \
@@ -126,6 +127,7 @@ nobase_dist_config_DATA = \
 	test_configs/ofi_rxd/ofi_rxd.exclude \
 	test_configs/shm/all.test \
 	test_configs/shm/shm.exclude \
+	test_configs/shm/cuda.exclude \
 	test_configs/shm/quick.test \
 	test_configs/shm/verify.test \
 	test_configs/sm2/quick.test \
@@ -182,6 +184,7 @@ nobase_dist_config_DATA = \
 	pytest/efa/test_mr.py \
 	pytest/efa/test_efa_shm_addr.py \
 	pytest/efa/test_env.py \
+	pytest/efa/test_multi_ep.py \
 	pytest/shm/conftest.py \
 	pytest/shm/shm_common.py \
 	pytest/shm/test_av.py \
@@ -254,10 +257,6 @@ functional_fi_msg_epoll_LDADD = libfabtests.la
 functional_fi_msg_SOURCES = \
 	functional/msg.c
 functional_fi_msg_LDADD = libfabtests.la
-
-functional_fi_stream_msg_SOURCES = \
-	functional/stream_msg.c
-functional_fi_stream_msg_LDADD = libfabtests.la
 
 functional_fi_rdm_SOURCES = \
 	functional/rdm.c

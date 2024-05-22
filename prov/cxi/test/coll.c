@@ -33,7 +33,7 @@
 #include "cxip_test_common.h"
 
 /* If not compiled with DEBUG=1, this is a no-op */
-#define	TRACE(fmt, ...)	CXIP_TRACE(CXIP_TRC_TEST_CODE, fmt, ##__VA_ARGS__)
+#define	TRACE(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_TEST_CODE, fmt, ##__VA_ARGS__)
 
 #define	MIN(a,b) (((a)<(b))?(a):(b))
 
@@ -538,7 +538,7 @@ void _put_data(int count, int from_rank, int to_rank)
 	/* check final counts */
 	TRACE("check counts\n");
 	if (count * sizeof(*buf) >
-	    ep->ep_obj->coll.buffer_size - ep->ep_obj->rxc.min_multi_recv) {
+	    ep->ep_obj->coll.buffer_size - ep->ep_obj->rxc->min_multi_recv) {
 		cnt = ofi_atomic_get32(&mc_obj_recv->coll_pte->buf_swap_cnt);
 		cr_assert(cnt > 0, "Did not recirculate buffers\n");
 	}

@@ -15,7 +15,8 @@
 
 #include "cxip.h"
 
-#define	TRACE(fmt, ...)	CXIP_TRACE(CXIP_TRC_CURL, fmt, ##__VA_ARGS__)
+#define	TRACE_CURL(fmt, ...)	CXIP_COLL_TRACE(CXIP_TRC_COLL_CURL, fmt, \
+						##__VA_ARGS__)
 
 #define CXIP_DBG(...) _CXIP_DBG(FI_LOG_FABRIC, __VA_ARGS__)
 #define CXIP_WARN(...) _CXIP_WARN(FI_LOG_FABRIC, __VA_ARGS__)
@@ -229,17 +230,17 @@ int cxip_curl_perform(const char *endpoint, const char *request,
 	struct cxip_curl_handle *handle;
 	struct curl_slist *headers;
 	char *token;
+	char *verify_peer_str;
+	int verify_peer;
 	CURLMcode mres;
 	CURL *curl;
 	int running;
 	int ret;
 
-	TRACE("%s: usrptr=%p\n", __func__, usrptr);
 	ret = -FI_ENOMEM;
 	handle = calloc(1, sizeof(*handle));
 	if (!handle)
 		goto fail;
-	TRACE("%s: handle=%p\n", __func__, handle);
 
 	/* libcurl is fussy about NULL requests */
 	handle->endpoint = strdup(endpoint);
@@ -255,8 +256,6 @@ int cxip_curl_perform(const char *endpoint, const char *request,
 	/* add user completion function and pointer */
 	handle->usrfunc = usrfunc;
 	handle->usrptr = usrptr;
-	TRACE("%s: handle->usrfnc=%p\n", __func__, handle->usrfunc);
-	TRACE("%s: handle->usrptr=%p\n", __func__, handle->usrptr);
 
 	ret = -FI_EACCES;
 	curl = curl_easy_init();
@@ -273,9 +272,10 @@ int cxip_curl_perform(const char *endpoint, const char *request,
 	headers = curl_slist_append(headers, "charset: utf-8");
 	token = NULL;
 	if (sessionToken) {
-		ret = asprintf(&token, "x-xenon-auth-token: %s", sessionToken);
+		ret = asprintf(&token, "Authorization: Bearer %s",
+			       sessionToken);
 		if (ret < 0) {
-			CXIP_WARN("x-xenon-auth-token create failed\n");
+			CXIP_WARN("token string create failed\n");
 			goto fail;
 		}
 		headers = curl_slist_append(headers, token);
@@ -291,12 +291,20 @@ int cxip_curl_perform(const char *endpoint, const char *request,
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
 				 strlen(handle->request));
 	}
+	curl_easy_setopt(curl, CURLOPT_STDERR, stderr);
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, handle->recv);
 	curl_easy_setopt(curl, CURLOPT_PRIVATE, (void *)handle);
 	curl_easy_setopt(curl, CURLOPT_VERBOSE, (long)verbose);
 	curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, cxip_curl_opname(op));
+
+	verify_peer_str = getenv("CURLOPT_SSL_VERIFYPEER");
+	if (verify_peer_str)
+		verify_peer = atoi(verify_peer_str);
+	else
+		verify_peer = 0;
+	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, verify_peer);
 
 	curl_multi_add_handle(cxip_curlm, curl);
 	mres = curl_multi_perform(cxip_curlm, &running);
@@ -367,7 +375,6 @@ int cxip_curl_progress(struct cxip_curl_handle **handleptr)
 	long status;
 	struct curl_buffer *recv;
 
-
 	/* This needs to be quick if nothing is pending */
 	if (!cxip_curl_count)
 		return -FI_ENODATA;
@@ -388,27 +395,35 @@ int cxip_curl_progress(struct cxip_curl_handle **handleptr)
 		return (running) ? -FI_EAGAIN : -FI_ENODATA;
 	}
 
+	if (msg->data.result >= CURL_LAST) {
+		CXIP_WARN("CURL unknown result %d\n", msg->data.result);
+	}
+	else if (msg->data.result > CURLE_OK) {
+		CXIP_WARN("CURL error '%s'\n",
+			  curl_easy_strerror(msg->data.result));
+	}
 	/* retrieve our handle from the private pointer */
 	res = curl_easy_getinfo(msg->easy_handle,
 				CURLINFO_PRIVATE, (char **)&handle);
 	if (res != CURLE_OK) {
+		TRACE_CURL("curl_easy_getinfo(%s) failed: %s\n",
+			   "CURLINFO_PRIVATE", curl_easy_strerror(res));
 		CXIP_WARN("curl_easy_getinfo(%s) failed: %s\n",
-			"CURLINFO_PRIVATE",
-			curl_easy_strerror(res));
+			  "CURLINFO_PRIVATE", curl_easy_strerror(res));
 		return -FI_EOTHER;
 	}
 	/* handle is now valid, must eventually be freed */
-	TRACE("%s: handle=%p\n", __func__, handle);
-
 	/* retrieve the status code, should not fail */
 	res = curl_easy_getinfo(msg->easy_handle,
 				CURLINFO_RESPONSE_CODE, &status);
 	if (res != CURLE_OK) {
+		TRACE_CURL("curl_easy_getinfo(%s) failed: %s\n",
+			   "CURLINFO_RESPONSE_CODE", curl_easy_strerror(res));
 		CXIP_WARN("curl_easy_getinfo(%s) failed: %s\n",
-			"CURLINFO_RESPONSE_CODE",
-			curl_easy_strerror(res));
+			  "CURLINFO_RESPONSE_CODE", curl_easy_strerror(res));
 		/* continue, handle->status should show zero */
 	}
+	TRACE_CURL("curl_easy_getinfo() success\n");
 
 	/* we can recover resources now */
 	curl_slist_free_all((struct curl_slist *)handle->headers);
@@ -422,11 +437,8 @@ int cxip_curl_progress(struct cxip_curl_handle **handleptr)
 	handle->status = status;
 
 	/* call the user function */
-	TRACE("%s: handle->usrfnc=%p\n", __func__, handle->usrfunc);
-	TRACE("%s: handle->usrptr=%p\n", __func__, handle->usrptr);
 	if (handle->usrfunc)
 		handle->usrfunc(handle);
-	TRACE("%s: returned from usrfnc\n", __func__);
 
 	/* return the handle, or free it */
 	if (handleptr) {

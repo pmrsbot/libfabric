@@ -374,15 +374,16 @@ void efa_rdm_pke_handle_data_copied(struct efa_rdm_pke *pkt_entry)
  *      For other types of error, an error EQ entry is written.
  *
  * @param[in]	pkt_entry	pkt entry
- * @param[in]	err		libfabric error code
  * @param[in]	prov_errno	provider specific error code
  */
-void efa_rdm_pke_handle_tx_error(struct efa_rdm_pke *pkt_entry, int err, int prov_errno)
+void efa_rdm_pke_handle_tx_error(struct efa_rdm_pke *pkt_entry, int prov_errno)
 {
 	struct efa_rdm_peer *peer;
 	struct efa_rdm_ope *txe;
 	struct efa_rdm_ope *rxe;
 	struct efa_rdm_ep *ep;
+
+	int err = to_fi_errno(prov_errno);
 
 	assert(pkt_entry->alloc_type == EFA_RDM_PKE_FROM_EFA_TX_POOL);
 
@@ -459,7 +460,7 @@ void efa_rdm_pke_handle_tx_error(struct efa_rdm_pke *pkt_entry, int err, int pro
 				 */
 				if (!(txe->internal_flags & EFA_RDM_TXE_WRITTEN_RNR_CQ_ERR_ENTRY)) {
 					txe->internal_flags |= EFA_RDM_TXE_WRITTEN_RNR_CQ_ERR_ENTRY;
-					efa_rdm_txe_handle_error(pkt_entry->ope, FI_ENORX, prov_errno);
+					efa_rdm_txe_handle_error(pkt_entry->ope, err, prov_errno);
 				}
 
 				efa_rdm_pke_release_tx(pkt_entry);
@@ -504,9 +505,7 @@ void efa_rdm_pke_handle_tx_error(struct efa_rdm_pke *pkt_entry, int err, int pro
 		}
 		break;
 	default:
-		EFA_WARN(FI_LOG_CQ,
-				"%s unknown x_entry type %d\n",
-				__func__, pkt_entry->ope->type);
+		EFA_WARN(FI_LOG_CQ, "Unknown x_entry type: %d\n", pkt_entry->ope->type);
 		assert(0 && "unknown x_entry state");
 		efa_base_ep_write_eq_error(&ep->base_ep, err, prov_errno);
 		efa_rdm_pke_release_tx(pkt_entry);
@@ -655,26 +654,51 @@ void efa_rdm_pke_handle_send_completion(struct efa_rdm_pke *pkt_entry)
  * This function will write error cq or eq entry, then release the packet entry.
  *
  * @param[in]	pkt_entry	pkt entry
- * @param[in]	err		libfabric error code
  * @param[in]	prov_errno	provider specific error code
  */
-void efa_rdm_pke_handle_rx_error(struct efa_rdm_pke *pkt_entry, int err, int prov_errno)
+void efa_rdm_pke_handle_rx_error(struct efa_rdm_pke *pkt_entry, int prov_errno)
 {
 	struct efa_rdm_ep *ep;
+	int err = to_fi_errno(prov_errno);
 
 	ep = pkt_entry->ep;
+	/*
+	 * we should still decrement the efa_rx_pkts_posted
+	 * when getting a failed rx completion.
+	 */
+	assert(ep->efa_rx_pkts_posted > 0);
+	ep->efa_rx_pkts_posted--;
 
 	EFA_DBG(FI_LOG_CQ, "Packet receive error: %s (%d)\n",
 	        efa_strerror(prov_errno), prov_errno);
+
+	/*
+	 * pkes posted by efa_rdm_ep_bulk_post_internal_rx_pkts
+	 * are not associated with ope before being progressed
+	 */
+	if (!pkt_entry->ope) {
+		char ep_addr_str[OFI_ADDRSTRLEN];
+		size_t buflen=0;
+
+		memset(&ep_addr_str, 0, sizeof(ep_addr_str));
+		buflen = sizeof(ep_addr_str);
+		efa_rdm_ep_raw_addr_str(ep, ep_addr_str, &buflen);
+		EFA_WARN(FI_LOG_CQ,
+			"Packet receive error from non TX/RX packet.  Our address: %s\n",
+			ep_addr_str);
+
+		efa_base_ep_write_eq_error(&ep->base_ep, err, prov_errno);
+		efa_rdm_pke_release_rx(pkt_entry);
+		return;
+	}
 
 	if (pkt_entry->ope->type == EFA_RDM_TXE) {
 		efa_rdm_txe_handle_error(pkt_entry->ope, err, prov_errno);
 	} else if (pkt_entry->ope->type == EFA_RDM_RXE) {
 		efa_rdm_rxe_handle_error(pkt_entry->ope, err, prov_errno);
 	} else {
-		EFA_WARN(FI_LOG_CQ,
-		"%s unknown x_entry type %d\n",
-			__func__, pkt_entry->ope->type);
+		EFA_WARN(FI_LOG_CQ, "unknown RDM operation entry type encountered: %d\n",
+			pkt_entry->ope->type);
 		assert(0 && "unknown x_entry state");
 		efa_base_ep_write_eq_error(&ep->base_ep, err, prov_errno);
 	}
@@ -721,7 +745,7 @@ fi_addr_t efa_rdm_pke_insert_addr(struct efa_rdm_pke *pkt_entry, void *raw_addr)
 	ret = efa_av_insert_one(ep->base_ep.av, (struct efa_ep_addr *)raw_addr,
 	                        &rdm_addr, 0, NULL, false);
 	if (OFI_UNLIKELY(ret != 0)) {
-		efa_base_ep_write_eq_error(&ep->base_ep, FI_EINVAL, FI_EFA_ERR_AV_INSERT);
+		efa_base_ep_write_eq_error(&ep->base_ep, ret, FI_EFA_ERR_AV_INSERT);
 		return -1;
 	}
 
@@ -886,7 +910,7 @@ void efa_rdm_pke_handle_recv_completion(struct efa_rdm_pke *pkt_entry)
 			"Peer %d is requesting feature %d, which this EP does not support.\n",
 			(int)pkt_entry->addr, base_hdr->type);
 
-		assert(0 && "invalid REQ packe type");
+		assert(0 && "invalid REQ packet type");
 		efa_base_ep_write_eq_error(&ep->base_ep, FI_EIO, FI_EFA_ERR_INVALID_PKT_TYPE);
 		efa_rdm_pke_release_rx(pkt_entry);
 		return;

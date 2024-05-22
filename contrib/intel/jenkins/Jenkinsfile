@@ -3,7 +3,6 @@ import groovy.transform.Field
 properties([disableConcurrentBuilds(abortPrevious: true)])
 @Field def DO_RUN=true
 @Field def TARGET="main"
-@Field def SCRIPT_LOCATION="upstream/libfabric/contrib/intel/jenkins"
 @Field def RELEASE=false
 @Field def BUILD_MODES=["reg", "dbg", "dl"]
 @Field def PYTHON_VERSION="3.9"
@@ -59,7 +58,7 @@ def run_fabtests(stage_name, hw, partition, node_num, prov, util=null,
 }
 
 def run_middleware(providers, stage_name, test, hw, partition, node_num,
-                   mpi=null, imb_grp=null) {
+                   mpi=null, imb_grp=null, user_env=null) {
   def base_cmd = "python3.9 ${RUN_LOCATION}/runtests.py --test=${test} --build_hw=${hw}"
   def opts = ""
   def prefix = "${env.LOG_DIR}/${stage_name}_"
@@ -74,7 +73,10 @@ def run_middleware(providers, stage_name, test, hw, partition, node_num,
 
   if (env.WEEKLY.toBoolean())
     base_cmd = "${base_cmd} --weekly=${env.WEEKLY}"
-    
+  
+  if (user_env)
+    base_cmd = "${base_cmd} --user_env ${user_env}"
+
   for (prov in providers) {
     if (prov[1]) {
       echo "Running ${prov[0]}-${prov[1]} ${stage_name}"
@@ -89,6 +91,14 @@ def run_middleware(providers, stage_name, test, hw, partition, node_num,
     slurm_batch("${partition}", "${node_num}", "${output}",
                 "${base_cmd} ${opts}")
   }
+}
+
+def run_ci(stage_name, config_name) {
+  sh """source ${CI_LOCATION}/${env.CI_MODULE}/venv/bin/activate;\
+        python run.py \
+        --output=${env.LOG_DIR}/${stage_name} \
+        --job=${config_name}
+  """
 }
 
 def gather_logs(cluster, key, dest, source) {
@@ -157,9 +167,22 @@ def checkout_ci_resources() {
   """
 }
 
+def checkout_ci() {
+  sh """
+   if [[ ! -d ${env.WORKSPACE}/ci ]]; then
+      mkdir ${env.WORKSPACE}/ci
+    else
+      rm -rf ${env.WORKSPACE}/ci && mkdir ${env.WORKSPACE}/ci
+    fi
+
+    git clone --recurse-submodules ${env.CI} ${env.WORKSPACE}/ci
+  """
+}
+
 def checkout_external_resources() {
   checkout_ci_resources()
   checkout_upstream()
+  checkout_ci()
 }
 
 def generate_diff(def branch_name, def output_loc) {
@@ -238,6 +261,10 @@ def build(item, mode=null, hw=null, additional_args=null) {
   run_python(PYTHON_VERSION, cmd)
 }
 
+def build_ci() {
+  sh "${CI_LOCATION}/${env.CI_MODULE}/bootstrap.sh"
+}
+
 def check_target() {
   echo "CHANGE_TARGET = ${env.CHANGE_TARGET}"
   if (changeRequest()) {
@@ -289,7 +316,7 @@ def skip() {
   }
 
   echo "Changeset is: ${changeStrings.toArray()}"
-  if (changeStrings.toArray().every { it =~ /(?:fabtests\/pytests|man|prov\/efa|prov\/opx).*$/ }) {
+  if (changeStrings.toArray().every { it =~ /(?:fabtests\/pytests|man|prov\/efa|prov\/opx|contrib\/aws).*$/ }) {
     echo "DONT RUN!"
     return true
   }
@@ -317,8 +344,10 @@ pipeline {
   environment {
       JOB_CADENCE = 'PR'
       WITH_ENV="'PATH+EXTRA=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin:$PYTHONPATH'"
-      RUN_LOCATION="${env.WORKSPACE}/${SCRIPT_LOCATION}/"
       CUSTOM_WORKSPACE="${CB_HOME}/workspace/${JOB_NAME}/${env.BUILD_NUMBER}"
+      DELETE_LOCATION="${env.CUSTOM_WORKSPACE}/middlewares"
+      RUN_LOCATION="${env.CUSTOM_WORKSPACE}/ci_resources/legacy_pipeline_scripts/"
+      CI_LOCATION="${env.CUSTOM_WORKSPACE}/ci"
       LOG_DIR = "${env.CUSTOM_WORKSPACE}/log_dir"
   }
   stages {
@@ -338,6 +367,9 @@ pipeline {
             checkout scm
           }
           dir ("${CUSTOM_WORKSPACE}/ucx/libfabric") {
+            checkout scm
+          }
+          dir ("${CUSTOM_WORKSPACE}/cuda/libfabric") {
             checkout scm
           }
           dir ("${CUSTOM_WORKSPACE}/iouring/libfabric") {
@@ -388,7 +420,17 @@ pipeline {
     stage ('parallel-builds') {
       when { equals expected: true, actual: DO_RUN }
       parallel {
+        stage ('build-ci') {
+          steps {
+            script {
+              build_ci()
+            }
+          }
+        }
         stage ('build-water') {
+          environment {
+            build_type = "water"
+          }
           steps {
             script {
               slurm_build(BUILD_MODES, "water", "water", "water")
@@ -397,10 +439,18 @@ pipeline {
                             """python$PYTHON_VERSION ${RUN_LOCATION}/build.py \
                               --build_item=mpich --build_hw=water"""
                           )
+              slurm_batch("water", "1",
+                          "${env.LOG_DIR}/build_shmem_water_log",
+                          """python$PYTHON_VERSION ${RUN_LOCATION}/build.py \
+                              --build_item=shmem --build_hw=water"""
+                         )
             }
           }
         }
         stage ('build-grass') {
+          environment {
+            build_type = "grass"
+          }
           steps {
             script {
               slurm_build(BUILD_MODES, "grass", "grass", "grass")
@@ -409,10 +459,18 @@ pipeline {
                             """python$PYTHON_VERSION ${RUN_LOCATION}/build.py \
                               --build_item=mpich --build_hw=grass"""
                           )
+              slurm_batch("grass", "1",
+                          "${env.LOG_DIR}/build_shmem_grass_log",
+                          """python$PYTHON_VERSION ${RUN_LOCATION}/build.py \
+                              --build_item=shmem --build_hw=grass"""
+                         )
             }
           }
         }
         stage ('build-electric') {
+          environment {
+            build_type = "electric"
+          }
           steps {
             script {
               slurm_build(BUILD_MODES, "electric", "electric", "electric")
@@ -423,6 +481,16 @@ pipeline {
           steps {
             script {
               slurm_build(BUILD_MODES, "totodile", "ucx", "ucx")
+            }
+          }
+        }
+        stage ('build-cuda') {
+          steps {
+            script {
+              slurm_build(BUILD_MODES, "cyndaquil", "cuda", "cyndaquil",
+                          "--cuda")
+              slurm_build(BUILD_MODES, "quilava", "cuda", "quilava",
+                          "--cuda")
             }
           }
         }
@@ -479,48 +547,50 @@ pipeline {
     stage('parallel-tests') {
       when { equals expected: true, actual: DO_RUN }
       parallel {
-        stage('MPI_verbs-rxm_IMB') {
+        stage ('CI_MPI_verbs-rxm_IMB') {
+          environment {
+            build_type = "water"
+          }
           steps {
             script {
-              dir (RUN_LOCATION) {
-                def providers = [["verbs", "rxm"]]
-                for (def mpi in ["impi"]) {
-                  for (imb_grp = 1; imb_grp < 4; imb_grp++) {
-                    run_middleware(providers, "MPI", "IMB", "water",
-                                   "squirtle,totodile", "2", "${mpi}",
-                                   "${imb_grp}")
-                  }
-                }
+              dir (CI_LOCATION) {
+                run_ci("CI_MPI_verbs-rxm_IMB", "pr_imb_water.json")
               }
             }
           }
         }
-        stage('MPI_verbs-rxm_OSU') {
+        stage ('CI_MPI_verbs-rxm_OSU') {
+          environment {
+            build_type = "water"
+          }
           steps {
             script {
-              dir (RUN_LOCATION) {
-                def providers = [["verbs", "rxm"]]
-                for (def mpi in ["impi", "mpich"]) {
-                  run_middleware(providers, "MPI", "osu", "water",
-                                 "squirtle,totodile", "2", "${mpi}")
-                }
+              dir (CI_LOCATION) {
+                run_ci("CI_MPI_verbs-rxm_OSU", "pr_osu_water.json")
               }
             }
           }
         }
-        stage('MPI_tcp') {
+        stage ('CI_MPI_tcp_IMB') {
+          environment {
+            build_type = "grass"
+          }
           steps {
             script {
-              dir (RUN_LOCATION) {
-                def providers = [["tcp", null]]
-                for (imb_grp = 1; imb_grp < 4; imb_grp++) {
-                  run_middleware(providers, "MPI", "IMB", "grass",
-                                 "bulbasaur", "2", "impi", "${imb_grp}")
-                }
-                for (def mpi in ["impi", "mpich"]) {
-                  run_middleware(providers, "MPI", "osu", "grass", "bulbasaur",
-                                 "2", "${mpi}")
-                }
+              dir (CI_LOCATION) {
+                run_ci("CI_MPI_tcp_IMB", "pr_imb_grass.json")
+              }
+            }
+          }
+        }
+        stage ('CI_MPI_tcp_OSU') {
+          environment {
+            build_type = "grass"
+          }
+          steps {
+            script {
+              dir (CI_LOCATION) {
+                run_ci("CI_MPI_tcp_OSU", "pr_osu_grass.json")
               }
             }
           }
@@ -637,13 +707,22 @@ pipeline {
             }
           }
         }
-        stage('SHMEM') {
+        stage('SHMEM_grass') {
           steps {
             script {
               dir (RUN_LOCATION) {
-                run_middleware([["verbs", null], ["tcp", null],
-                                ["sockets", null]], "SHMEM", "shmem",
-                                "water", "squirtle,totodile", "2")
+                run_middleware([["tcp", null]], "SHMEM", "shmem",
+                                "grass", "grass", "2")
+              }
+            }
+          }
+        }
+        stage('SHMEM_water') {
+          steps {
+            script {
+              dir (RUN_LOCATION) {
+                run_middleware([["verbs", "rxm"], ["sockets", null]], "SHMEM",
+                                "shmem", "water", "squirtle,totodile", "2")
               }
             }
           }
@@ -658,12 +737,22 @@ pipeline {
             }
           }
         }
-        stage ('oneCCL') {
+	      stage ('oneCCL') {
           steps {
             script {
               dir (RUN_LOCATION) {
-                run_middleware([["tcp", "rxm"]/*, ["psm3", null]*/], "oneCCL",
-                               "oneccl", "grass", "bulbasaur", "2")
+		            run_middleware([["verbs", null]], "oneCCL",
+                               "oneccl", "water", "squirtle,totodile", "2")
+		            run_middleware([["shm", null]], "oneCCL",
+			                         "oneccl", "grass", "bulbasaur", "1")
+		            run_middleware([["psm3", null]], "oneCCL",
+			                         "oneccl", "water", "squirtle", "2")
+		            run_middleware([["tcp", null]], "oneCCL",
+			                         "oneccl", "grass", "bulbasaur", "2")
+                run_middleware([["shm", null]], "oneCCL_DSA",
+                               "oneccl", "electric", "pikachu", "1", null, null,
+                               """CCL_ATL_SHM=1 FI_SHM_DISABLE_CMA=1 \
+                               FI_SHM_USE_DSA_SAR=1 FI_LOG_LEVEL=warn""")
               }
             }
           }
@@ -674,9 +763,16 @@ pipeline {
           steps {
             script {
               dir (RUN_LOCATION) {
-                run_middleware([["verbs", "rxm"]], "oneCCL-GPU-v3", "onecclgpu",
-                               "gpu", "fabrics-ci", "2")
-              } 
+		            run_middleware([["tcp", null]], "oneCCL-GPU-v3", "onecclgpu",
+			                         "gpu", "fabrics-ci", "2", null, null,
+                               "FI_HMEM_DISABLE_P2P=1")
+		            run_middleware([["psm3", null]], "oneCCL-GPU-v3", "onecclgpu",
+			                         "gpu", "fabrics-ci", "2", null, null,
+                               "FI_HMEM_DISABLE_P2P=1")
+		            run_middleware([["verbs", null]], "oneCCL-GPU-v3", "onecclgpu",
+                               "gpu", "fabrics-ci", "2", null, null,
+                               "FI_HMEM_DISABLE_P2P=1")
+              }
             }
           }
         }
@@ -713,7 +809,7 @@ pipeline {
           options { skipDefaultCheckout() }
           steps {
             script {
-              dir ("${env.WORKSPACE}/${SCRIPT_LOCATION}/") {
+              dir (RUN_LOCATION) {
                 dmabuf_output = "${LOG_DIR}/DMABUF-Tests_verbs-rxm_dmabuf"
                 cmd = """ python3.9 runtests.py --test=dmabuf \
                            --prov=verbs --util=rxm --build_hw=gpu"""
@@ -725,6 +821,34 @@ pipeline {
             }
           }
         }
+        stage ('cuda-shm-v1') {
+          steps {
+            script {
+              dir (RUN_LOCATION) {
+                run_fabtests("cuda_v1_shm", "cyndaquil", "cyndaquil", "1",
+                             "shm", null, null, "h2d")
+                run_fabtests("cuda_v1_shm", "cyndaquil", "cyndaquil", "1",
+                             "shm", null, null, "d2d")
+                // run_fabtests("cuda_v1_shm", "cyndaquil", "cyndaquil", "1",
+                //              "shm", null, null, "xd2d")
+              }
+            }
+          }
+        }
+        stage ('cuda-shm-v2') {
+          steps {
+            script {
+              dir (RUN_LOCATION) {
+                run_fabtests("cuda_v2_shm", "quilava", "quilava", "1", "shm",
+                             null, null, "h2d")
+                run_fabtests("cuda_v2_shm", "quilava", "quilava", "1", "shm",
+                             null, null, "d2d")
+                // run_fabtests("cuda_v2_shm", "quilava ", "quilava", "1", "shm",
+                //              null, null, "xd2d")
+              }
+            }
+          }
+        }
         stage ('ze-shm-v3') {
           agent { node { label 'ze' } }
           options { skipDefaultCheckout() }
@@ -732,11 +856,11 @@ pipeline {
             script {
               dir (RUN_LOCATION) {
                 run_fabtests("ze_v3_shm", "gpu", "fabrics-ci", "1", "shm", null,
-                             null, "h2d")
+                             "FI_HMEM_DISABLE_P2P=1", "h2d")
                 run_fabtests("ze_v3_shm", "gpu", "fabrics-ci", "1", "shm", null,
-                             null, "d2d")
+                             "FI_HMEM_DISABLE_P2P=1", "d2d")
                 run_fabtests("ze_v3_shm", "gpu", "fabrics-ci", "1", "shm", null,
-                             null, "xd2d")
+                             "FI_HMEM_DISABLE_P2P=1", "xd2d")
               }
             }
           }

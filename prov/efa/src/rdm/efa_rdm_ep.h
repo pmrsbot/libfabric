@@ -12,11 +12,6 @@
 
 #define EFA_RDM_ERROR_MSG_BUFFER_LENGTH 1024
 
-enum ibv_cq_ex_type {
-	IBV_CQ,
-	EFADV_CQ
-};
-
 /** @brief Information of a queued copy.
  *
  * This struct is used when receiving buffer is on device.
@@ -50,10 +45,6 @@ struct efa_rdm_ep {
 	/* per-version extra feature/request flag */
 	uint64_t extra_info[EFA_RDM_MAX_NUM_EXINFO];
 
-	struct ibv_cq_ex *ibv_cq_ex;
-
-	enum ibv_cq_ex_type ibv_cq_ex_type;
-
 	/* shm provider fid */
 	struct fid_ep *shm_ep;
 
@@ -83,9 +74,6 @@ struct efa_rdm_ep {
 
 	/* Resource management flag */
 	uint64_t rm_full;
-
-	/* application's ordering requirements */
-	uint64_t msg_order;
 
 	/* Application's maximum msg size hint */
 	size_t max_msg_size;
@@ -137,8 +125,6 @@ struct efa_rdm_ep {
 	/* tx/rx_entries used by long CTS msg/write/read protocol
          * which have data to be sent */
 	struct dlist_entry ope_longcts_send_list;
-	/* read entries with data to be read */
-	struct dlist_entry read_pending_list;
 	/* list of #efa_rdm_peer that are in backoff due to RNR */
 	struct dlist_entry peer_backoff_list;
 	/* list of #efa_rdm_peer that will retry posting handshake pkt */
@@ -174,6 +160,12 @@ struct efa_rdm_ep {
 	 * It exists because posting RX packets by bulk is more efficient.
 	 */
 	size_t efa_rx_pkts_to_post;
+
+	/*
+	 * Number of RX packets that are held (not released) by progress engine
+	 * due to queued hmem copy or local read.
+	 */
+	size_t efa_rx_pkts_held;
 
 	/* number of outstanding tx ops on efa device */
 	size_t efa_outstanding_tx_ops;
@@ -247,7 +239,7 @@ static inline size_t efa_rdm_ep_get_tx_pool_size(struct efa_rdm_ep *ep)
 
 static inline int efa_rdm_ep_need_sas(struct efa_rdm_ep *ep)
 {
-	return ep->msg_order & FI_ORDER_SAS;
+	return ((ep->user_info->tx_attr->msg_order & FI_ORDER_SAS) || (ep->user_info->rx_attr->msg_order & FI_ORDER_SAS));
 }
 
 
@@ -273,8 +265,6 @@ ssize_t efa_rdm_ep_post_queued_pkts(struct efa_rdm_ep *ep,
 				    struct dlist_entry *pkts);
 
 size_t efa_rdm_ep_get_memory_alignment(struct efa_rdm_ep *ep, enum fi_hmem_iface iface);
-
-int efa_rdm_ep_get_prov_errno(struct efa_rdm_ep *ep);
 
 static inline
 struct efa_domain *efa_rdm_ep_domain(struct efa_rdm_ep *ep)
